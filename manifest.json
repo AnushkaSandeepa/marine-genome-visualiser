@@ -1,0 +1,9 @@
+install.packages("rsconnect")  # once
+setwd("path/to/marine-genome-visualiser")
+
+rsconnect::writeManifest(
+  appDir = ".",
+  appPrimaryDoc = "app.R",
+  appMode = "shiny",
+  verbose = TRUE
+)
