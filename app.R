@@ -3,6 +3,7 @@
 library(shiny)
 library(leaflet)
 library(leaflet.extras)
+library(raster)
 library(robis)
 library(dplyr)
 library(purrr)
@@ -13,8 +14,7 @@ library(memoise)
 library(tibble)
 library(stringr)
 library(htmltools)
-library(readr)   # for write_csv() in download handler
-
+library(readr)   
 POLITE_DELAY <- 0.35
 
 # ---- Client species list ----
