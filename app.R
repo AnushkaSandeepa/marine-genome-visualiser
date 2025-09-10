@@ -1,8 +1,4 @@
 # app.R
-# install.packages(c(
-#   "shiny","leaflet","leaflet.extras","robis","dplyr","purrr",
-#   "lubridate","DT","scales","memoise","tibble","stringr","htmltools"
-# ))
 
 library(shiny)
 library(leaflet)
@@ -17,6 +13,7 @@ library(memoise)
 library(tibble)
 library(stringr)
 library(htmltools)
+library(readr)   # for write_csv() in download handler
 
 POLITE_DELAY <- 0.35
 
@@ -70,10 +67,12 @@ safe_event_date <- function(x) {
 # Memoised OBIS fetcher to avoid repeated network calls
 .fetch_obis <- function(species, wkt = NULL, start = NULL, end = NULL) {
   Sys.sleep(POLITE_DELAY)
-  occurrence(scientificname = species,
-             geometry = wkt,
-             startdate = if (!is.null(start)) as.Date(start) else NULL,
-             enddate   = if (!is.null(end))   as.Date(end)   else NULL)
+  occurrence(
+    scientificname = species,
+    geometry = wkt,
+    startdate = if (!is.null(start)) as.Date(start) else NULL,
+    enddate   = if (!is.null(end))   as.Date(end)   else NULL
+  )
 }
 fetch_obis <- memoise(.fetch_obis)
 
