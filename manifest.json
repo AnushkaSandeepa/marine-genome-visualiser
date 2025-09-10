@@ -1,9 +1,10 @@
-install.packages("rsconnect")  # once
+install.packages("rsconnect")     
 setwd("path/to/marine-genome-visualiser")
 
 rsconnect::writeManifest(
   appDir = ".",
-  appPrimaryDoc = "app.R",
-  appMode = "shiny",
   verbose = TRUE
 )
+
+install.packages("jsonlite")
+jsonlite::fromJSON("manifest.json")  
