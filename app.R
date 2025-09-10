@@ -67,14 +67,21 @@ safe_event_date <- function(x) {
 # Memoised OBIS fetcher to avoid repeated network calls
 .fetch_obis <- function(species, wkt = NULL, start = NULL, end = NULL) {
   Sys.sleep(POLITE_DELAY)
-  occurrence(
+  base <- "https://api.obis.org/v3/occurrence"
+  qs <- list(
     scientificname = species,
     geometry = wkt,
-    startdate = if (!is.null(start)) as.Date(start) else NULL,
-    enddate   = if (!is.null(end))   as.Date(end)   else NULL
+    startdate = as.character(as.Date(start)),
+    enddate   = as.character(as.Date(end)),
+    size      = 10000           # increase if you really need more; consider paging
   )
+  enc <- function(x) utils::URLencode(as.character(x), reserved = TRUE)
+  qs <- qs[!vapply(qs, is.null, logical(1))]
+  url <- paste0(base, "?", paste0(names(qs), "=", vapply(qs, enc, ""), collapse = "&"))
+  j <- jsonlite::fromJSON(url)
+  tibble::as_tibble(j$results)
 }
-fetch_obis <- memoise(.fetch_obis)
+
 
 # ---- UI ----
 ui <- fluidPage(
