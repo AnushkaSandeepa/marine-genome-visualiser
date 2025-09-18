@@ -166,9 +166,9 @@ ui <- tagList(
   tags$footer(
     class = "app-footer",
     div(class="wrap",
-        div(class="left",  HTML(sprintf("&copy; %s UWA Data Science Group", format(Sys.Date(), "%Y")))),
+        div(class="left",  HTML(sprintf("&copy; %s Design & Developed by UWA Data Science Group", format(Sys.Date(), "%Y")))),
         div(class="right",
-            span("Design & Developed by UWA Data Science Group"),
+           
             
             # Website (globe)
             a(href = "https://www.uwa.edu.au/oceans-institute",
