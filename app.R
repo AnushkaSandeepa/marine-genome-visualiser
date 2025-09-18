@@ -23,7 +23,7 @@ ui <- tagList(
     
     # Navbar link colors / states
     tags$style(HTML("
-      .navbar .nav-link { color: #374151 !important; }
+      .navbar .nav-link { color: #ffffff !important; }
       .navbar .navbar-brand { color: #111827 !important; }
       .navbar .nav-link:hover, .navbar .nav-link:focus {
         color: #111827 !important; text-decoration: none;
@@ -181,7 +181,7 @@ ui <- tagList(
   tags$footer(
     class = "app-footer",
     div(class="wrap",
-        div(class="left",  HTML(sprintf("&copy; %s Design & Developed by UWA Data Science Student", format(Sys.Date(), "%Y")))),
+        div(class="left",  HTML(sprintf("&copy; %s Design & Developed by UWA Data Science Students", format(Sys.Date(), "%Y")))),
         div(class="right",
            
             
