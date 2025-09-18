@@ -4,7 +4,7 @@
 MapSearchUI <- function(id) {
   ns <- NS(id)
   shiny::fluidPage(
-    shiny::titlePanel("OBIS Coverage – Name/AphiaID + Per-species metrics"),
+    shiny::titlePanel("Ocean Genome Explorer"),
     shiny::sidebarLayout(
       shiny::sidebarPanel(
         shiny::radioButtons(
