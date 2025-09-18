@@ -4,18 +4,16 @@ library(bslib)
 # --- Navbar content (your modules are assumed to be sourced already) ---
 app_ui <- bslib::page_navbar(
   title = tagList(
-    tags$img(
-      src = "navbar-icon.png",       # place in www/
-      height = 40,
-      style = "margin-right:10px; vertical-align:middle; border-radius:6px;"
-    )
-    # , span("Ocean Genome Explorer")
+    tags$img(src = "navbar-icon.png", height = 40,
+             style = "margin-right:10px; vertical-align:middle; border-radius:6px;")
   ),
   bg = "#25a5c3",
-  bslib::nav_panel("Map Search", MapSearchUI("map")),
-  bslib::nav_panel("ID Search",  IDSearchUI("idsearch")),
+  bslib::nav_panel("Map Search",  MapSearchUI("map")),
+  bslib::nav_panel("ID Search",   IDSearchUI("idsearch")),
+  bslib::nav_panel("Name Search", NameSearchUI("names")),   # <- NEW
   bslib::nav_panel("Visualizations", VizUI("viz"))
 )
+
 
 ui <- tagList(
   # ---------- HEAD: only links, styles, scripts ----------
@@ -41,6 +39,23 @@ ui <- tagList(
     
     # Splash styles
     tags$style(HTML("
+      html, body { height: 100%; }
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+      /* App content stretches to fill available space */
+      #app-content {
+        flex: 1 0 auto;         /* take remaining space */
+        visibility: hidden;     /* you already toggle this via splash JS */
+        display: block;
+      }
+      /* Keep footer at the very bottom, without overlapping content */
+      .app-footer {
+        flex-shrink: 0;         /* don't let it collapse */
+        margin-top: auto;       /* push it to the bottom */
+      }
       #splash {
         position: fixed; inset: 0;
         background: #001a2a url('ocean-genomics-dna.png') center/cover no-repeat; /* in www/ */
@@ -198,8 +213,10 @@ ui <- tagList(
 server <- function(input, output, session) {
   MapSearchServer("map")
   IDSearchServer("idsearch")
+  NameSearchServer("names")   # <- NEW
   VizServer("viz")
 }
+
 
 shinyApp(ui, server)
 

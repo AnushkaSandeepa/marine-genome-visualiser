@@ -1,15 +1,13 @@
 # ===== File: R/pages_id_search.R =====
-# ID Search (module) — query WoRMS: AphiaRecordByExternalID/{ID}?type={type}
-# Now also supports direct AphiaID lookups via the batch endpoint:
-#   GET /AphiaRecordsByAphiaIDs?aphiaids[]=ID&aphiaids[]=...
-# Multiple IDs (comma/whitespace-separated), memoised, with error handling.
+
 
 requireNamespace("memoise")
 
 IDSearchUI <- function(id) {
   ns <- NS(id)
   shiny::fluidPage(
-    shiny::titlePanel("ID Search (WoRMS)"),
+    shinyjs::useShinyjs(),
+    shiny::titlePanel("Search by Different IDs "),
     htmltools::tags$style("
       .worms-card { border:1px solid #e5e7eb; border-radius:12px; padding:12px; }
       .worms-card h4 { margin:0 0 8px 0; font-size:16px; }
@@ -61,6 +59,10 @@ IDSearchUI <- function(id) {
           htmltools::span("Status:"),
           htmltools::strong(textOutput(ns("status"), inline = TRUE))
         ),
+        shinycssloaders::withSpinner(  # <- add this wrapper
+          uiOutput(ns("cards")),
+          type = 6, color = "#2563eb", size = 0.75
+        ),
         uiOutput(ns("cards")),
         htmltools::br(),
         shiny::downloadButton(ns("dl_csv"), "Download results CSV")
@@ -80,6 +82,7 @@ IDSearchServer <- function(id) {
     requireNamespace("stringr")
     requireNamespace("readr")
     requireNamespace("memoise")
+    requireNamespace("shinyjs")
     
     # ---------- helpers ----------
     display <- function(x) {
@@ -105,8 +108,10 @@ IDSearchServer <- function(id) {
       if (is.null(x) || !nzchar(x)) return(character(0))
       ids <- unlist(strsplit(x, "[,\\s]+", perl = TRUE))
       ids <- stringr::str_squish(ids)
-      ids[nzchar(ids)]
+      ids <- ids[nzchar(ids)]
+      unique(ids)  # <- keep first occurrence, preserve order
     }
+    
     
     polite_headers <- function() {
       ua <- sprintf("OG-Explorer/Shiny (contact: your.email@uwa.edu.au)")
@@ -366,6 +371,17 @@ IDSearchServer <- function(id) {
         })
       }
     }, ignoreInit = TRUE)
+    
+    # --- Disable button + change label while loading ---
+    observeEvent(input$go, {
+      shinyjs::disable("go")
+      shiny::updateActionButton(session, "go", label = "Downloading…")
+    })
+    
+    observeEvent(results_df(), {
+      shinyjs::enable("go")
+      shiny::updateActionButton(session, "go", label = "Search")
+    })
     
     # ---------- Status text ----------
     output$status <- renderText({
