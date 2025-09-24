@@ -4,8 +4,12 @@ library(bslib)
 # --- Navbar content (your modules are assumed to be sourced already) ---
 app_ui <- bslib::page_navbar(
   title = tagList(
-    tags$img(src = "navbar-icon.png", height = 40,
-             style = "margin-right:10px; vertical-align:middle; border-radius:6px;")
+    tags$img(
+      src = "navbar-icon.png",
+      height = 40,
+      class = "refresh-on-click",  # <-- added to enable click-to-refresh
+      style = "margin-right:10px; vertical-align:middle; border-radius:6px; cursor:pointer;" # <-- pointer
+    )
   ),
   bg = "#25a5c3",
   bslib::nav_panel("Map Search",  MapSearchUI("map")),
@@ -23,7 +27,7 @@ ui <- tagList(
     
     # Navbar link colors / states
     tags$style(HTML("
-      .navbar .nav-link { color: #ffffff !important; }
+      .navbar .nav-link { color: #374151 !important; }
       .navbar .navbar-brand { color: #111827 !important; }
       .navbar .nav-link:hover, .navbar .nav-link:focus {
         color: #111827 !important; text-decoration: none;
@@ -157,6 +161,19 @@ ui <- tagList(
         }
         setTimeout(reveal, 4000);
       });
+    ")),
+    
+    # CLICK-TO-REFRESH JS (added without altering the splash script)
+    tags$script(HTML("
+      document.addEventListener('DOMContentLoaded', function () {
+        document.body.addEventListener('click', function (ev) {
+          const el = ev.target.closest('.refresh-on-click');
+          if (el) {
+            // tiny delay for visual feedback (e.g., hover/focus)
+            setTimeout(function(){ window.location.reload(); }, 50);
+          }
+        });
+      });
     "))
   ),
   
@@ -164,7 +181,11 @@ ui <- tagList(
   div(
     id = "splash",
     div(class = "brand",
-        tags$img(src = "app-icon.png", alt = "Ocean Genome Explorer logo", class = "splash-brandmark"),
+        tags$img(
+          src = "app-icon.png",
+          alt = "Ocean Genome Explorer logo",
+          class = "splash-brandmark refresh-on-click"  # <-- added to enable click-to-refresh
+        ),
         h1("Ocean Genome Explorer"),
         p("Integrating OBIS • WoRMS • NCBI • FishBase"),
         div(class = "glow")
@@ -181,9 +202,8 @@ ui <- tagList(
   tags$footer(
     class = "app-footer",
     div(class="wrap",
-        div(class="left",  HTML(sprintf("&copy; %s Design & Developed by UWA Data Science Students", format(Sys.Date(), "%Y")))),
+        div(class="left",  HTML(sprintf("&copy; %s Design & Developed by UWA Data Science Group", format(Sys.Date(), "%Y")))),
         div(class="right",
-           
             
             # Website (globe)
             a(href = "https://www.uwa.edu.au/oceans-institute",
@@ -192,7 +212,7 @@ ui <- tagList(
               tags$svg(class = "icon", viewBox = "0 0 24 24", fill = "currentColor",
                        tags$path(d = "M12 2a10 10 0 1 0 0 20a10 10 0 0 0 0-20zm0 2a8 8 0 0 1 5 1.78c-.7.3-1.5.63-2.37.78c-1.08.2-1.63-.12-2.38-.62c-.7-.47-1.58-1.06-3.25-1.06c-.83 0-1.55.14-2.17.34A7.98 7.98 0 0 1 12 4zm-6.32 3.2c.72.58 1.72 1.2 3.32 1.2c1.34 0 2.13-.5 2.86-.98c.64-.43 1.23-.82 2.14-.82c.57 0 1.32.17 2.52.45c.53.12 1.02.2 1.48.25c.38.88.6 1.85.6 2.86c0 .31-.02.61-.06.9c-1.47.49-2.35.61-2.94.36c-.72-.31-1.14-1.11-1.77-2.32c-.36-.69-.8-1.53-1.45-1.53c-.7 0-1.09.58-1.7 1.5c-.66.98-1.56 2.3-3.98 2.3c-1.6 0-2.74-.45-3.52-.96a8.1 8.1 0 0 1 .52-2.21zM4.1 12.5c.86.38 1.98.7 3.4.7c2.03 0 3.19-.76 3.95-1.56c.7-.74 1.16-1.54 1.84-1.54c.62 0 .98.5 1.64 1.73c.64 1.2 1.1 1.9 1.87 2.23c.47.2 1.1.27 2.12.07c-.87 2.83-3.52 4.87-6.82 4.87c-3.45 0-6.34-2.32-7.01-5.5z")
               ),
-              span("UWA Oceans Institute")   # keep or remove if you want icon-only
+              span("UWA Oceans Institute")
             ),
             
             # Facebook
@@ -202,7 +222,7 @@ ui <- tagList(
               tags$svg(class = "icon", viewBox = "0 0 24 24", fill = "currentColor",
                        tags$path(d = "M22 12.06C22 6.48 17.52 2 11.94 2S2 6.48 2 12.06c0 5.04 3.68 9.22 8.48 9.94v-7.03H7.9v-2.9h2.58V9.73c0-2.55 1.52-3.96 3.85-3.96c1.12 0 2.29.2 2.29.2v2.52h-1.29c-1.27 0-1.67.79-1.67 1.6v1.93h2.84l-.45 2.9h-2.39V22c4.8-.72 8.48-4.9 8.48-9.94z")
               ),
-              span("Facebook")               # keep or remove for icon-only
+              span("Facebook")
             )
         )
         
@@ -217,7 +237,4 @@ server <- function(input, output, session) {
   VizServer("viz")
 }
 
-
 shinyApp(ui, server)
-
-
