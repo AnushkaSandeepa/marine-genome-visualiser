@@ -1,47 +1,27 @@
-# ===== File: R/commons.R =====
+# ===== R/commons.R =====
 
-# polite pause between remote calls (helps avoid hammering APIs)
+# polite pause between remote calls
 POLITE_DELAY <- 0.35
 
-# ---- Client species list ----
-client_species <- tibble::tribble(
-  ~common_name, ~species,
-  "Blackspot snapper", "Lutjanus fulviflamma",
-  "Stripey snapper", "Lutjanus carponotatus",
-  "Brownstripe snapper", "Lutjanus vitta",
-  "Moses snapper", "Lutjanus russellii",
-  "Grass emperor", "Lethrinus laticaudis",
-  "Fivelined snapper", "Lutjanus quinquelineatus",
-  "Chinamanfish", "Symphorus nematophorus",
-  "Red emperor", "Lutjanus sebae",
-  "Darktail snapper", "Lutjanus lemniscatus",
-  "Spangled emperor", "Lethrinus nebulosus",
-  "Sharptooth snapper", "Pristipomoides typus",
-  "Crimson snapper", "Lutjanus erythropterus",
-  "Goldflag jobfish", "Pristipomoides auricilla",
-  "Ruby snapper", "Etelis carbunculus",
-  "Flame snapper", "Etelis coruscans",
-  "Oblique-banded snapper", "Pristipomoides zonatus",
-  "Smalltooth jobfish", "Aphareus furca",
-  "Blue fusilier", "Caesio teres",
-  "Rusty jobfish", "Aphareus rutilans",
-  "Blacktail snapper", "Lutjanus fulvus",
-  "Red bass", "Lutjanus bohar",
-  "Green jobfish", "Aprion virescens",
-  "Midnight snapper", "Macolor macularis",
-  "Mangrove jack", "Lutjanus argentimaculatus"
-) |>
-  dplyr::mutate(dplyr::across(dplyr::everything(), stringr::str_squish))
+# ---- Load species list from CSV/ ----
+full_species <- readr::read_csv("CSV/new_final_species.csv") |>
+  dplyr::mutate(
+    species_canonical = stringr::str_squish(species_canonical),
+    # keep only "Genus species" from longer names
+    species_canonical = stringr::word(species_canonical, 1, 2)
+  )
+
+client_species <- full_species |>
+  dplyr::transmute(species = species_canonical) |>
+  dplyr::distinct() |>
+  dplyr::arrange(species)
 
 # ---- Helpers ----
 bbox_wkt <- function(w, s, e, n) {
-  sprintf(
-    "POLYGON((%f %f, %f %f, %f %f, %f %f, %f %f))",
-    w, s, e, s, e, n, w, n, w, s
-  )
+  sprintf("POLYGON((%f %f, %f %f, %f %f, %f %f, %f %f))",
+          w, s, e, s, e, n, w, n, w, s)
 }
 
-# Robust date parser for OBIS eventDate
 safe_event_date <- function(x) {
   d1 <- suppressWarnings(lubridate::ymd_hms(x, quiet = TRUE, tz = "UTC"))
   d2 <- suppressWarnings(lubridate::ymd(x, quiet = TRUE))
@@ -52,7 +32,7 @@ safe_event_date <- function(x) {
   as.Date(out)
 }
 
-# Memoised OBIS fetcher to avoid repeated network calls
+# Memoised OBIS fetcher
 .fetch_obis <- function(species, wkt = NULL, start = NULL, end = NULL) {
   Sys.sleep(POLITE_DELAY)
   robis::occurrence(
@@ -62,5 +42,4 @@ safe_event_date <- function(x) {
     enddate   = if (!is.null(end))   as.Date(end)   else NULL
   )
 }
-
 fetch_obis <- memoise::memoise(.fetch_obis)
