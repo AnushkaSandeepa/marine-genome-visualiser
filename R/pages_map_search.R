@@ -1,5 +1,8 @@
 # ===== File: R/pages_map_search.R =====
 # Map Search (module) — OBIS grid summary with Species search and metrics
+# Relies on helpers defined in R/commons.R:
+#  bbox_wkt(), safe_event_date(), normalize_obis(), fetch_obis(),
+#  make_bin_pal(), parse_cuts(), year_range_from_occ(), client_species
 
 MapSearchUI <- function(id) {
   ns <- NS(id)
@@ -17,11 +20,9 @@ MapSearchUI <- function(id) {
         shiny::conditionalPanel(
           sprintf("input['%s'] == false", ns("aus_only")),
           shiny::sliderInput(ns("lng_range"), "Longitude (°)",
-                             min = -180, max = 180, value = c(110, 160), step = 1
-          ),
+                             min = -180, max = 180, value = c(110, 160), step = 1),
           shiny::sliderInput(ns("lat_range"), "Latitude (°)",
-                             min = -90, max = 90, value = c(-45, -10), step = 1
-          )
+                             min = -90, max = 90, value = c(-45, -10), step = 1)
         ),
         shiny::dateRangeInput(
           ns("date_range"), "Date range",
@@ -29,9 +30,7 @@ MapSearchUI <- function(id) {
           min = "1900-01-01", max = Sys.Date()
         ),
         shiny::hr(),
-        shiny::sliderInput(ns("cell_km"), "Cell size (km)",
-                           min = 10, max = 250, value = 50, step = 10
-        ),
+        shiny::sliderInput(ns("cell_km"), "Cell size (km)", min = 10, max = 250, value = 50, step = 10),
         shiny::selectInput(ns("metric"), "Summary metric",
                            choices = c(
                              "Occurrence count" = "n_occ",
@@ -39,8 +38,7 @@ MapSearchUI <- function(id) {
                              "Mean individual count (non-missing)" = "mean_abund",
                              "Sum individual count (non-missing)"  = "sum_abund"
                            ),
-                           selected = "n_occ"
-        ),
+                           selected = "n_occ"),
         shiny::conditionalPanel(
           sprintf("input['%s'] != 'spp_rich'", ns("metric")),
           shiny::radioButtons(
@@ -96,43 +94,6 @@ MapSearchServer <- function(id) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     
-    # ---- Helpers ------------------------------------------------------------
-    normalize_obis <- function(df) {
-      if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) return(tibble::tibble())
-      need_chr <- c("scientificName", "datasetID", "basisOfRecord", "eventDate")
-      need_num <- c("decimalLongitude", "decimalLatitude", "depth",
-                    "individualCount", "temperature", "salinity")
-      for (nm in c(need_chr, need_num)) if (!nm %in% names(df)) df[[nm]] <- NA
-      
-      df |>
-        dplyr::transmute(
-          scientificName   = as.character(.data$scientificName),
-          decimalLongitude = suppressWarnings(as.numeric(.data$decimalLongitude)),
-          decimalLatitude  = suppressWarnings(as.numeric(.data$decimalLatitude)),
-          eventDate        = safe_event_date(.data$eventDate),
-          depth            = suppressWarnings(as.numeric(.data$depth)),
-          temperature      = suppressWarnings(as.numeric(.data$temperature)),
-          salinity         = suppressWarnings(as.numeric(.data$salinity)),
-          individualCount  = suppressWarnings(as.numeric(.data$individualCount)),
-          datasetID        = as.character(.data$datasetID),
-          basisOfRecord    = as.character(.data$basisOfRecord)
-        ) |>
-        dplyr::filter(
-          !is.na(.data$decimalLongitude), !is.na(.data$decimalLatitude),
-          dplyr::between(.data$decimalLongitude, -180, 180),
-          dplyr::between(.data$decimalLatitude,  -90,   90)
-        )
-    }
-    
-    year_range_from_occ <- function(sp) {
-      df <- tryCatch({ robis::occurrence(scientificname = sp, fields = c("eventDate")) }, error = function(e) NULL)
-      if (is.null(df) || !"eventDate" %in% names(df)) return("NA – NA")
-      yrs <- suppressWarnings(lubridate::year(lubridate::ymd(df$eventDate)))
-      yrs <- yrs[!is.na(yrs)]
-      if (length(yrs) == 0) return("NA – NA")
-      paste0(min(yrs), " – ", max(yrs))
-    }
-    
     # ---- Inputs -> geometry -------------------------------------------------
     geom_wkt <- reactive({
       if (isTRUE(input$aus_only)) {
@@ -152,13 +113,13 @@ MapSearchServer <- function(id) {
         n <- length(sp_vec)
         dfs <- purrr::map(seq_along(sp_vec), function(i) {
           shiny::incProgress(i / n, detail = sp_vec[i])
-          df <- tryCatch({
-            fetch_obis_name(
+          df_raw <- tryCatch({
+            fetch_obis(  # <<— uses commons.R memoised fetcher
               species = sp_vec[i], wkt = geom_wkt(),
               start = input$date_range[1], end = input$date_range[2]
             )
           }, error = function(e) NULL)
-          normalize_obis(df)
+          normalize_obis(df_raw)  # <<— uses commons.R normaliser
         })
         dplyr::bind_rows(dfs)
       })
@@ -253,8 +214,7 @@ MapSearchServer <- function(id) {
                           leg_title <- "Species richness"
                         } else {
                           metric_field <- switch(input$metric,
-                                                 n_occ = "n_occ", mean_abund = "mean_abund", sum_abund = "sum_abund"
-                          )
+                                                 n_occ = "n_occ", mean_abund = "mean_abund", sum_abund = "sum_abund")
                           if (input$metric_scope == "all") {
                             dat <- gd$grid |>
                               dplyr::inner_join(dplyr::transmute(gd$all, cell_id, value = .data[[metric_field]]), by = "cell_id")
