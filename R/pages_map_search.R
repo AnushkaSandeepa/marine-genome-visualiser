@@ -1,8 +1,4 @@
 # ===== File: R/pages_map_search.R =====
-# Map Search (module) — OBIS grid summary with Species search and metrics
-# Relies on helpers defined in R/commons.R:
-#  bbox_wkt(), safe_event_date(), normalize_obis(), fetch_obis(),
-#  make_bin_pal(), parse_cuts(), year_range_from_occ(), client_species
 
 MapSearchUI <- function(id) {
   ns <- NS(id)
