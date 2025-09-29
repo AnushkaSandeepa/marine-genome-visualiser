@@ -28,14 +28,28 @@ ui <- tagList(
     tags$meta(
       `http-equiv` = "Content-Security-Policy",
       content = paste(
+        # sensible baseline
         "default-src 'self';",
-        "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://cartodb-basemaps-a.global.ssl.fastly.net https://cartodb-basemaps-b.global.ssl.fastly.net https://cartodb-basemaps-c.global.ssl.fastly.net;",
-        "style-src 'self' 'unsafe-inline';",
-        "script-src 'self' 'unsafe-inline';",
-        "connect-src 'self';"
+        "base-uri 'self';",
+        "object-src 'none';",
+        
+        # your JS & CSS (inline + jsDelivr for powerbi-client)
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;",
+        "style-src  'self' 'unsafe-inline';",
+        
+        # images / fonts you use in www/
+        "img-src   'self' data: blob:;",
+        "font-src  'self' data:;",
+        
+        # outbound fetches (Power BI may call other MS endpoints)
+        "connect-src 'self' https://*.powerbi.com https://*.microsoft.com;",
+        
+        # 🔑 allow embedding these sites inside your app
+        "frame-src 'self' https://app.powerbi.com https://*.powerbi.com;",
+        # legacy fallback (some browsers still honor child-src)
+        "child-src 'self' https://app.powerbi.com https://*.powerbi.com;"
       )
     ),
-    
     
     # Navbar link colors / states
     tags$style(HTML("
