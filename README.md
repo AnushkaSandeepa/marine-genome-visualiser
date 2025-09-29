@@ -4,9 +4,11 @@ This repository hosts the UWA Capstone Project for the Master of Data Science pr
 
 # 1) Reinstall packages under this R so the manifest captures them
 install.packages(c(
-  "shiny","leaflet","leaflet.extras","robis","dplyr","purrr","lubridate",
-  "DT","scales","memoise","tibble","stringr","htmltools","readr","jsonlite"
+  "shiny","bslib","leaflet","leaflet.extras","robis","dplyr","purrr","lubridate",
+  "DT","scales","memoise","tibble","stringr","htmltools","readr","jsonlite",
+  "tidyr","httr","reticulate"
 ))
+
 
 # 2) Regenerate manifest (updates the "platform" field to 4.4.3)
 install.packages("rsconnect")
