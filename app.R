@@ -172,20 +172,24 @@ ui <- tagList(
     # Splash JS (only controls splash visibility)
     tags$script(HTML("
       document.addEventListener('DOMContentLoaded', function () {
-        const splash = document.getElementById('splash');
-        const app = document.getElementById('app-content');
-        let ready = false;
-        function reveal() {
-          if (ready) return;
-          ready = true;
+        function triggerResize(){ setTimeout(function(){ window.dispatchEvent(new Event('resize')); }, 80); }
+    
+        // When your splash finishes, also trigger a resize so Leaflet can reflow
+        const origReveal = function(){
+          const splash = document.getElementById('splash');
+          const app    = document.getElementById('app-content');
           if (splash) {
             splash.classList.add('fade-out');
-            setTimeout(() => { if (splash.parentNode) splash.remove(); app.style.visibility = 'visible'; }, 650);
+            setTimeout(function(){ if (splash.parentNode) splash.remove(); app.style.visibility='visible'; triggerResize(); }, 650);
           } else {
-            app.style.visibility = 'visible';
+            app.style.visibility='visible'; triggerResize();
           }
-        }
-        setTimeout(reveal, 4000);
+        };
+        // keep your 4s delay but now with resize
+        setTimeout(origReveal, 4000);
+    
+        // Also handle tab switches (Bootstrap 5)
+        document.addEventListener('shown.bs.tab', triggerResize, true);
       });
     ")),
     

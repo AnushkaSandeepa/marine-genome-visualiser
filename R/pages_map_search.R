@@ -182,12 +182,20 @@ MapSearchServer <- function(id) {
     })
     
     # ---- Map ---------------------------------------------------------------
+    # inside MapSearchServer(...)
     output$map <- leaflet::renderLeaflet({
       leaflet::leaflet() |>
         leaflet::addProviderTiles("CartoDB.Positron") |>
         leaflet::setView(lng = 120, lat = -20, zoom = 3)
     })
     shiny::outputOptions(output, "map", suspendWhenHidden = FALSE)
+    
+    # ensure Leaflet recalculates after the DOM is visible
+    session$onFlushed(function(){
+      try(leaflet::leafletProxy("map", session = session) |> leaflet::invalidateSize(), silent = TRUE)
+    }, once = TRUE)
+    
+    
     
     observeEvent(list(grid_data(), input$metric, input$metric_scope,
                       input$metric_taxon, input$bin_mode, input$n_bins,
