@@ -144,7 +144,10 @@ MapSearchServer <- function(id) {
       
       cell_m <- input$cell_km * 1000
       bbox <- sf::st_bbox(pts)
-      grd <- sf::st_make_grid(sf::st_as_sfc(bbox), cellsize = cell_m, square = TRUE)
+      bb_sfc <- sf::st_as_sfc(bbox)
+      sf::st_crs(bb_sfc) <- sf::st_crs(pts)   # ensure CRS is set
+      grd <- sf::st_make_grid(bb_sfc, cellsize = cell_m, square = TRUE)
+      
       if (length(grd) == 0) return(NULL)
       grid_sf <- sf::st_sf(cell_id = seq_along(grd), geometry = grd)
       
@@ -188,12 +191,13 @@ MapSearchServer <- function(id) {
         leaflet::addProviderTiles("CartoDB.Positron") |>
         leaflet::setView(lng = 120, lat = -20, zoom = 3)
     })
+    shiny::outputOptions(output, "map", suspendWhenHidden = FALSE)
     
     observeEvent(list(grid_data(), input$metric, input$metric_scope,
                       input$metric_taxon, input$bin_mode, input$n_bins,
                       input$custom_cuts, input$show_centroids), {
                         gd <- grid_data()
-                        proxy <- leaflet::leafletProxy(ns("map"))
+                        proxy <- leaflet::leafletProxy("map", session = session)
                         proxy |> leaflet::clearShapes() |> leaflet::clearControls() |> leaflet::clearMarkers()
                         if (is.null(gd)) return()
                         
