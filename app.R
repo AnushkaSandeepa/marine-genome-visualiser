@@ -25,6 +25,18 @@ ui <- tagList(
     tags$link(rel = "icon", type = "image/png", href = "app-icon.png"),
     tags$link(rel = "apple-touch-icon", href = "app-icon.png"),
     
+    tags$meta(
+      `http-equiv` = "Content-Security-Policy",
+      content = paste(
+        "default-src 'self';",
+        "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://cartodb-basemaps-a.global.ssl.fastly.net https://cartodb-basemaps-b.global.ssl.fastly.net https://cartodb-basemaps-c.global.ssl.fastly.net;",
+        "style-src 'self' 'unsafe-inline';",
+        "script-src 'self' 'unsafe-inline';",
+        "connect-src 'self';"
+      )
+    ),
+    
+    
     # Navbar link colors / states
     tags$style(HTML("
       .navbar .nav-link { color: #374151 !important; }
