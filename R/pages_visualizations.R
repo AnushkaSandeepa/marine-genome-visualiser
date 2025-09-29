@@ -1,31 +1,29 @@
 # ===== File: R/pages_visualizations.R =====
-# Power BI + Streamlit embeds with auto-fallback to new window
-# Testing tab shows NO visualization until a new link is pasted and previewed.
+# Power BI tabs + Advanced visualizations (Python via reticulate)
 
 VizUI <- function(id) {
   ns <- NS(id)
   shiny::fluidPage(
     shiny::titlePanel("Visualizations"),
-    shiny::p("If an embed is blocked by cross-site restrictions, it will open in a new window automatically."),
     shiny::hr(),
     
     bslib::navs_tab(
       id = ns("viz_tabs"),
       
+      # Live, hard-wired embeds
       bslib::nav_panel("Distribution", shiny::uiOutput(ns("dist_panel"))),
       bslib::nav_panel("Progress",     shiny::uiOutput(ns("progress_panel"))),
       
+      # ---------- Advanced: Python/Plotly (reticulate) ----------
       bslib::nav_panel(
         "Advanced visualizations",
-        shiny::div(
-          class = "mb-2",
-          "If the embed doesn’t load due to cross-site restrictions, ",
-          shiny::tags$a(href = "https://ocean-genomes-dashboard.streamlit.app/",
-                        target = "_blank", rel = "noopener", "open it in a new window.")
+        shiny::div(class = "mb-2",
+                   shiny::helpText("These plots are rendered from Python via reticulate (pandas + plotly).")
         ),
-        shiny::uiOutput(ns("adv_vis"))
+        shiny::uiOutput(ns("py_grid"))  # 2x2 grid of plot HTML
       ),
       
+      # ---------- Testing (allows overriding links at runtime) ----------
       bslib::nav_panel(
         "Testing",
         shiny::fluidRow(
@@ -36,26 +34,24 @@ VizUI <- function(id) {
               c("Public (Publish to web)" = "public", "Secure (Embed for your org)" = "secure"),
               selected = "public"
             ),
-            # ---- Public inputs (LEFT BLANK BY DEFAULT) ----
+            
+            # --- Public publish-to-web preview ---
             shiny::conditionalPanel(
               sprintf("input['%s'] === 'public'", ns("mode")),
-              shiny::textInput(
-                ns("public_url"),
-                "Publish-to-web URL (Distribution)",
-                value = "", # leave empty
-                placeholder = "https://app.powerbi.com/view?r=XXXXXXXX"
+              shiny::textInput(ns("public_url"),
+                               "Publish-to-web URL (Distribution)",
+                               value = ""  # can paste another link here
               ),
-              shiny::textInput(
-                ns("progress_url"),
-                "Publish-to-web URL (Progress, optional — leave blank to reuse Distribution)",
-                value = "", # leave empty
-                placeholder = "https://app.powerbi.com/view?r=YYYYYYYY"
+              shiny::textInput(ns("progress_url"),
+                               "Publish-to-web URL (Progress; optional)",
+                               value = ""  # can paste another link here
               ),
               shiny::numericInput(ns("public_h"),   "Distribution height (px)", 800, 400, 3000, 20),
               shiny::numericInput(ns("progress_h"), "Progress height (px)",     820, 400, 3000, 20),
               shiny::actionButton(ns("show_public"), "Preview in Testing", class = "btn-primary")
             ),
-            # ---- Secure inputs ----
+            
+            # --- Secure org embed preview (token-based) ---
             shiny::conditionalPanel(
               sprintf("input['%s'] === 'secure'", ns("mode")),
               shiny::textInput(ns("workspace_id"), "Workspace (Group) ID"),
@@ -63,28 +59,20 @@ VizUI <- function(id) {
               shiny::textInput(ns("embed_url"),    "Embed URL"),
               shiny::passwordInput(ns("embed_token"), "Embed Token"),
               shiny::numericInput(ns("secure_h"), "Height (px)", 780, 400, 3000, 20),
-              shiny::actionButton(ns("show_secure"), "Show secure report", class = "btn-success"),
-              shiny::helpText("Generate a short-lived embed token server-side and paste it here.")
+              shiny::actionButton(ns("show_secure"), "Show secure report", class = "btn-success")
             )
           ),
-          shiny::column(
-            8,
-            # Placeholder only (NOT a visualization)
-            shiny::uiOutput(ns("pbi_view"))
-          )
+          shiny::column(8, shiny::uiOutput(ns("pbi_view")))
         )
       )
     ),
     
+    # styles for containers
     htmltools::tags$head(
-      htmltools::tags$script(src = "https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.js"),
       htmltools::tags$style(htmltools::HTML("
-        .pbi-container{width:100%;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;position:relative;}
+        .pbi-container{width:100%;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;position:relative;background:#fff;}
         .pbi-iframe{width:100%;height:100%;border:0;}
-        .embed-fallback{padding:16px;}
-        .embed-fallback a{font-weight:600; text-decoration:underline;}
-        .embed-overlay-link{position:absolute; top:8px; right:12px; z-index:2; font-size:0.9rem;}
-        .test-placeholder{padding:14px; color:#6b7280; background:#f9fafb; border:1px dashed #d1d5db; border-radius:10px;}
+        .py-card{border:1px solid #e5e7eb;border-radius:12px;padding:8px;margin-bottom:16px;background:#fff;}
       "))
     )
   )
@@ -93,128 +81,140 @@ VizUI <- function(id) {
 VizServer <- function(id) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
-    `%||%` <- function(a, b) if (is.null(a) || (is.character(a) && !nzchar(a))) b else a
     
-    # ===== Internal defaults for live tabs (hidden from inputs) =====
-    DIST_DEFAULT_LINK <- "https://app.powerbi.com/view?r=eyJrIjoiNWVhZGNlMzUtNzU5MS00ZTc3LWE2YjUtMjM5OGU4MjIyZjFkIiwidCI6IjYwMDg2NDZiLTFmODctNDI0NC05YzMxLTI0Yjg1ZGQwNGRhMiIsImMiOjEwfQ%3D%3D"
-    PROG_DEFAULT_LINK <- DIST_DEFAULT_LINK  # temp: Progress uses same until you paste a new link
-    
-    # ---- Generic embed with auto-fallback to new window ----
-    embed_with_fallback <- function(url, height_px, box_id) {
-      ujson <- jsonlite::toJSON(url, auto_unbox = TRUE)
-      bid   <- jsonlite::toJSON(box_id, auto_unbox = TRUE)
-      htmltools::tagList(
-        htmltools::div(
-          id = box_id, class = "pbi-container",
-          style = sprintf("height:%dpx;", as.integer(height_px)),
-          htmltools::tags$a(class="embed-overlay-link", href = url, target = "_blank", rel = "noopener", "Open in new window")
+    # ---------- Helpers ----------
+    is_blank <- function(x) is.null(x) || !nzchar(trimws(x))
+    pbi_iframe <- function(url, height_px = 800, title = NULL) {
+      if (is_blank(url)) {
+        return(shiny::div(
+          class = "p-3 py-card",
+          shiny::strong("No Power BI URL provided."),
+          shiny::div("Paste a Publish-to-web URL or configure the secure embed.")
+        ))
+      }
+      htmltools::tags$div(
+        class = "pbi-container", style = sprintf("height:%dpx;", as.integer(height_px)),
+        if (!is_blank(title)) htmltools::tags$div(
+          style = "padding:8px 10px;font-weight:600;border-bottom:1px solid #eee;background:#fafafa;",
+          title
         ),
-        htmltools::tags$script(htmltools::HTML(sprintf("
-          (function(){
-            const url = %s, boxId = %s;
-            const box = document.getElementById(boxId);
-            if(!box) return;
-
-            const overlay = box.querySelector('a.embed-overlay-link')?.outerHTML || '';
-            box.innerHTML = overlay;
-            const iframe = document.createElement('iframe');
-            iframe.className = 'pbi-iframe';
-            iframe.setAttribute('allowFullScreen','');
-            iframe.src = url;
-            box.appendChild(iframe);
-
-            let loaded = false, opened = false;
-            const openNew = () => {
-              if (opened) return; opened = true;
-              try { window.open(url, '_blank', 'noopener'); } catch(e) {}
-              box.innerHTML = overlay + '<div class=\"embed-fallback\">This content is blocked by the site. ' +
-                              '<a href=\"'+url+'\" target=\"_blank\" rel=\"noopener\">Open in a new window</a>.</div>';
-            };
-
-            iframe.addEventListener('load', function(){ loaded = true; });
-
-            setTimeout(function(){ if (!loaded) openNew(); }, 1800);
-            setTimeout(function(){
-              try {
-                const href = iframe.contentWindow && iframe.contentWindow.location && iframe.contentWindow.location.href;
-                if (!href || href === 'about:blank') openNew();
-              } catch(e) { /* cross-origin: ignore */ }
-            }, 3000);
-          })();
-        ", ujson, bid)))
+        htmltools::tags$iframe(
+          class = "pbi-iframe",
+          src = url,
+          allowfullscreen = NA,
+          frameborder = "0"
+        )
       )
     }
     
-    # ---- Reactives for live tabs (allow pasted URLs to override defaults) ----
-    dist_url <- shiny::reactive({
-      url <- trimws(input$public_url %||% "")
-      if (nzchar(url)) url else DIST_DEFAULT_LINK
-    })
-    prog_url <- shiny::reactive({
-      url <- trimws(input$progress_url %||% "")
-      if (nzchar(url)) url else PROG_DEFAULT_LINK
+    # ---------- Hard-wire your two live public links into the main tabs ----------
+    # Distribution:
+    DIST_URL <- "https://app.powerbi.com/view?r=eyJrIjoiOTYyOGJiMzEtYzU2Mi00Nzc0LTkyZTUtNTBlN2IxMTAzZjRlIiwidCI6IjYwMDg2NDZiLTFmODctNDI0NC05YzMxLTI0Yjg1ZGQwNGRhMiIsImMiOjEwfQ%3D%3D"
+    # Progress:
+    PROG_URL <- "https://app.powerbi.com/view?r=eyJrIjoiZDM0MTYyMjEtMjM3MS00OTEyLTljODUtNjgzODM3MmQ3OGIwIiwidCI6IjYwMDg2NDZiLTFmODctNDI0NC05YzMxLTI0Yjg1ZGQwNGRhMiIsImMiOjEwfQ%3D%3D"
+    
+    output$dist_panel <- shiny::renderUI({
+      pbi_iframe(DIST_URL, height_px = 800, title = "Distribution dashboard")
     })
     
-    # === Testing tab: show NOTHING until a new link is pasted and Preview is clicked ===
-    output$pbi_view <- shiny::renderUI({
-      htmltools::div(class="test-placeholder",
-                     "Paste a new Power BI link above and click ",
-                     htmltools::tags$strong("Preview in Testing"),
-                     " to see it here.")
-    })
-    observeEvent(input$show_public, {
-      # Choose whichever new link the user pasted (Distribution first, then Progress)
-      new_url <- trimws(input$public_url %||% "")
-      if (!nzchar(new_url)) new_url <- trimws(input$progress_url %||% "")
-      shiny::req(nzchar(new_url))  # if empty, do nothing (keeps placeholder)
-      h <- as.integer(input$public_h %||% 780)
-      output$pbi_view <- shiny::renderUI(embed_with_fallback(new_url, h, ns("test_iframe")))
+    output$progress_panel <- shiny::renderUI({
+      pbi_iframe(PROG_URL, height_px = 820, title = "Progress dashboard")
     })
     
-    # === Secure preview (only renders when user supplies all fields + clicks) ===
-    observeEvent(input$show_secure, {
-      embed_url <- trimws(input$embed_url %||% "")
-      token     <- trimws(input$embed_token %||% "")
-      report_id <- trimws(input$report_id %||% "")
-      h         <- as.integer(input$secure_h %||% 780)
-      shiny::validate(
-        shiny::need(nzchar(embed_url), "Embed URL required."),
-        shiny::need(nzchar(token),     "Embed token required."),
-        shiny::need(nzchar(report_id), "Report ID required.")
+    # ---------- Advanced tab: Python plots via reticulate ----------
+    # Find project root (folder that contains both R/ and python/)
+    find_app_root <- function() {
+      d <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+      for (i in 1:8) {
+        if (dir.exists(file.path(d, "R")) && dir.exists(file.path(d, "python"))) return(d)
+        parent <- dirname(d); if (identical(parent, d)) break; d <- parent
+      }
+      stop("Couldn't locate project root containing 'R/' and 'python/'. Current getwd(): ", getwd())
+    }
+    
+    app_root <- find_app_root()
+    py_dir   <- file.path(app_root, "python")
+    py_file  <- file.path(py_dir, "ocean_genomes_pyvis.py")
+    csv_path <- file.path(app_root, "CSV", "new_final_species.csv")
+    
+    # Make sure Python can see the python/ folder, then import the module
+    reticulate::py_run_string(sprintf(
+      "import sys; p=r'%s';\nif p not in sys.path: sys.path.insert(0, p)",
+      normalizePath(py_dir, winslash = "/", mustWork = TRUE)
+    ))
+    
+    py_mod <- try(reticulate::import("ocean_genomes_pyvis", convert = TRUE), silent = TRUE)
+    if (inherits(py_mod, "try-error") || is.null(py_mod)) {
+      ok <- try(reticulate::source_python(py_file), silent = TRUE)
+      if (inherits(ok, "try-error"))
+        stop("Import failed. Checked absolute file: ", py_file,
+             "\nTip: ensure pandas+plotly are installed in reticulate's Python (e.g., install.packages('reticulate'); reticulate::py_install(c('pandas','plotly')) ).")
+    }
+    
+    output$py_grid <- shiny::renderUI({
+      out <- try({
+        if (exists("render_all_html", mode = "function", inherits = TRUE)) {
+          render_all_html(csv_path)                 # sourced: global R wrapper
+        } else {
+          py_mod$render_all_html(csv_path)          # imported module
+        }
+      }, silent = TRUE)
+      
+      if (inherits(out, "try-error") || is.null(out)) {
+        err <- tryCatch(reticulate::py_last_error(), error = function(e) NULL)
+        return(shiny::div(
+          class = "py-card",
+          shiny::strong("Python error while rendering plots."),
+          shiny::br(), "CSV path used: ", csv_path,
+          if (!is.null(err)) shiny::tags$pre(paste(err$type, err$value, sep = ": "))
+        ))
+      }
+      
+      html <- function(k)
+        if (!is.null(out[[k]]) && nzchar(out[[k]])) htmltools::HTML(out[[k]]) else shiny::div()
+      
+      shiny::tagList(
+        shiny::fluidRow(
+          shiny::column(6, shiny::div(class = "py-card", html("plot1"))),
+          shiny::column(6, shiny::div(class = "py-card", html("plot2")))
+        ),
+        shiny::fluidRow(
+          shiny::column(6, shiny::div(class = "py-card", html("plot3"))),
+          shiny::column(6, shiny::div(class = "py-card", html("plot4")))
+        )
       )
+    })
+    
+    # (Removed the stray observer that overwrote output$py_grid)
+    
+    # ---------- Testing tab logic ----------
+    observeEvent(input$show_public, {
+      # If nothing entered, fall back to the hard-wired links so Testing still shows something useful.
+      url_a <- if (!is_blank(input$public_url)) input$public_url else DIST_URL
+      url_b <- if (!is_blank(input$progress_url)) input$progress_url else PROG_URL
+      
       output$pbi_view <- shiny::renderUI({
-        htmltools::tagList(
-          htmltools::div(id = ns("pbiReport"), class = "pbi-container", style = sprintf("height:%dpx;", h)),
-          htmltools::tags$script(htmltools::HTML(sprintf("
-            (() => {
-              if (!window.powerbi) { console.error('powerbi.js not loaded'); return; }
-              const models = window['powerbi-client'].models;
-              const cfg = {
-                type: 'report',
-                id: '%s',
-                embedUrl: '%s',
-                accessToken: '%s',
-                tokenType: models.TokenType.Embed,
-                permissions: models.Permissions.Read,
-                settings: { panes: { filters: { visible: false } }, navContentPaneEnabled: true }
-              };
-              const el = document.getElementById('%s');
-              try { const existing = powerbi.get(el); if (existing) powerbi.reset(el); } catch(_) {}
-              powerbi.embed(el, cfg);
-            })();
-          ", report_id, embed_url, token, ns("pbiReport"))))
+        shiny::tagList(
+          pbi_iframe(url_a, as.integer(input$public_h),   title = "Distribution (Testing)"),
+          shiny::div(style = "height:12px;"),
+          pbi_iframe(url_b, as.integer(input$progress_h), title = "Progress (Testing)")
         )
       })
-    })
+    }, ignoreInit = TRUE)
     
-    # === Auto-render the live tabs only ===
-    auto_render_tabs <- function() {
-      output$dist_panel     <- shiny::renderUI(embed_with_fallback(dist_url(), as.integer(input$public_h %||% 800), ns("dist_iframe")))
-      output$progress_panel <- shiny::renderUI(embed_with_fallback(prog_url(),  as.integer(input$progress_h %||% 820), ns("prog_iframe")))
-      output$adv_vis        <- shiny::renderUI(embed_with_fallback("https://ocean-genomes-dashboard.streamlit.app/", 900, ns("adv_iframe")))
-    }
-    
-    shiny::observe({ auto_render_tabs() })  # on session start
-    shiny::observeEvent(list(input$public_url, input$progress_url), { auto_render_tabs() }, ignoreInit = TRUE)
+    observeEvent(input$show_secure, {
+      # Minimal secure embed placeholder (your JS SDK/token workflow would live here)
+      if (is_blank(input$embed_url)) {
+        output$pbi_view <- shiny::renderUI(shiny::div(
+          class = "py-card",
+          shiny::strong("Secure embed requires a valid Embed URL."),
+          shiny::div("Tip: supply Workspace ID, Report ID, Embed URL, and an Embed Token.")
+        ))
+        return()
+      }
+      output$pbi_view <- shiny::renderUI({
+        pbi_iframe(input$embed_url, as.integer(input$secure_h), title = "Secure embed (Testing)")
+      })
+    }, ignoreInit = TRUE)
   })
 }
