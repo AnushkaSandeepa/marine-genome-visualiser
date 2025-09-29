@@ -49,8 +49,7 @@ ui <- tagList(
         # legacy fallback (some browsers still honor child-src)
         "child-src 'self' https://app.powerbi.com https://*.powerbi.com;"
       )
-    )
-  ),
+    ),
     
     # Navbar link colors / states
     tags$style(HTML("
