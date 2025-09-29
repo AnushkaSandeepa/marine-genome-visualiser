@@ -8,13 +8,13 @@ VizUI <- function(id) {
     shiny::titlePanel("Visualizations"),
     shiny::p("If an embed is blocked by cross-site restrictions, it will open in a new window automatically."),
     shiny::hr(),
-
+    
     bslib::navs_tab(
       id = ns("viz_tabs"),
-
+      
       bslib::nav_panel("Distribution", shiny::uiOutput(ns("dist_panel"))),
       bslib::nav_panel("Progress",     shiny::uiOutput(ns("progress_panel"))),
-
+      
       bslib::nav_panel(
         "Advanced visualizations",
         shiny::div(
@@ -25,7 +25,7 @@ VizUI <- function(id) {
         ),
         shiny::uiOutput(ns("adv_vis"))
       ),
-
+      
       bslib::nav_panel(
         "Testing",
         shiny::fluidRow(
@@ -75,7 +75,7 @@ VizUI <- function(id) {
         )
       )
     ),
-
+    
     htmltools::tags$head(
       htmltools::tags$script(src = "https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.js"),
       htmltools::tags$style(htmltools::HTML("
@@ -94,11 +94,11 @@ VizServer <- function(id) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     `%||%` <- function(a, b) if (is.null(a) || (is.character(a) && !nzchar(a))) b else a
-
+    
     # ===== Internal defaults for live tabs (hidden from inputs) =====
     DIST_DEFAULT_LINK <- "https://app.powerbi.com/view?r=eyJrIjoiNWVhZGNlMzUtNzU5MS00ZTc3LWE2YjUtMjM5OGU4MjIyZjFkIiwidCI6IjYwMDg2NDZiLTFmODctNDI0NC05YzMxLTI0Yjg1ZGQwNGRhMiIsImMiOjEwfQ%3D%3D"
     PROG_DEFAULT_LINK <- DIST_DEFAULT_LINK  # temp: Progress uses same until you paste a new link
-
+    
     # ---- Generic embed with auto-fallback to new window ----
     embed_with_fallback <- function(url, height_px, box_id) {
       ujson <- jsonlite::toJSON(url, auto_unbox = TRUE)
@@ -144,7 +144,7 @@ VizServer <- function(id) {
         ", ujson, bid)))
       )
     }
-
+    
     # ---- Reactives for live tabs (allow pasted URLs to override defaults) ----
     dist_url <- shiny::reactive({
       url <- trimws(input$public_url %||% "")
@@ -154,7 +154,7 @@ VizServer <- function(id) {
       url <- trimws(input$progress_url %||% "")
       if (nzchar(url)) url else PROG_DEFAULT_LINK
     })
-
+    
     # === Testing tab: show NOTHING until a new link is pasted and Preview is clicked ===
     output$pbi_view <- shiny::renderUI({
       htmltools::div(class="test-placeholder",
@@ -170,7 +170,7 @@ VizServer <- function(id) {
       h <- as.integer(input$public_h %||% 780)
       output$pbi_view <- shiny::renderUI(embed_with_fallback(new_url, h, ns("test_iframe")))
     })
-
+    
     # === Secure preview (only renders when user supplies all fields + clicks) ===
     observeEvent(input$show_secure, {
       embed_url <- trimws(input$embed_url %||% "")
@@ -206,14 +206,14 @@ VizServer <- function(id) {
         )
       })
     })
-
+    
     # === Auto-render the live tabs only ===
     auto_render_tabs <- function() {
       output$dist_panel     <- shiny::renderUI(embed_with_fallback(dist_url(), as.integer(input$public_h %||% 800), ns("dist_iframe")))
       output$progress_panel <- shiny::renderUI(embed_with_fallback(prog_url(),  as.integer(input$progress_h %||% 820), ns("prog_iframe")))
       output$adv_vis        <- shiny::renderUI(embed_with_fallback("https://ocean-genomes-dashboard.streamlit.app/", 900, ns("adv_iframe")))
     }
-
+    
     shiny::observe({ auto_render_tabs() })  # on session start
     shiny::observeEvent(list(input$public_url, input$progress_url), { auto_render_tabs() }, ignoreInit = TRUE)
   })
