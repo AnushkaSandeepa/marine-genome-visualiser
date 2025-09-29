@@ -25,6 +25,18 @@ ui <- tagList(
     tags$link(rel = "icon", type = "image/png", href = "app-icon.png"),
     tags$link(rel = "apple-touch-icon", href = "app-icon.png"),
     
+    tags$meta(
+      `http-equiv` = "Content-Security-Policy",
+      content = paste(
+        "default-src 'self';",
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;",
+        "style-src 'self' 'unsafe-inline';",
+        "img-src 'self' data: blob:;",
+        "frame-src 'self' https://app.powerbi.com https://*.powerbi.com https://ocean-genomes-dashboard.streamlit.app;",
+        "child-src 'self' https://app.powerbi.com https://*.powerbi.com https://ocean-genomes-dashboard.streamlit.app;"
+      )
+    ),
+    
     # Navbar link colors / states
     tags$style(HTML("
       .navbar .nav-link { color: #374151 !important; }
