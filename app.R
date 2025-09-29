@@ -38,7 +38,8 @@ ui <- tagList(
         "style-src  'self' 'unsafe-inline';",
         
         # images / fonts you use in www/
-        "img-src   'self' data: blob:;",
+        "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://cartodb-basemaps-a.global.ssl.fastly.net https://cartodb-basemaps-b.global.ssl.fastly.net https://cartodb-basemaps-c.global.ssl.fastly.net;",
+
         "font-src  'self' data:;",
         
         # outbound fetches (Power BI may call other MS endpoints)
