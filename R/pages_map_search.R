@@ -6,25 +6,24 @@ MapSearchUI <- function(id) {
     shiny::titlePanel("Ocean Genome Explorer"),
     shiny::sidebarLayout(
       shiny::sidebarPanel(
+        # Server-side selectize to handle large option sets
         shiny::selectizeInput(
           ns("sp"), "Species",
-          choices = client_species$species,
-          selected = client_species$species[1:3],
-          multiple = TRUE
+          choices = NULL, multiple = TRUE
         ),
         shiny::checkboxInput(ns("aus_only"), "Limit to Australia region", value = TRUE),
         shiny::conditionalPanel(
           sprintf("input['%s'] == false", ns("aus_only")),
-          shiny::sliderInput(ns("lng_range"), "Longitude (°)",
-                             min = -180, max = 180, value = c(110, 160), step = 1),
-          shiny::sliderInput(ns("lat_range"), "Latitude (°)",
-                             min = -90, max = 90, value = c(-45, -10), step = 1)
+          shiny::sliderInput(ns("lng_range"), "Longitude (°)", min = -180, max = 180, value = c(110, 160), step = 1),
+          shiny::sliderInput(ns("lat_range"), "Latitude (°)",  min = -90,  max =  90, value = c(-45, -10), step = 1)
         ),
         shiny::dateRangeInput(
           ns("date_range"), "Date range",
           start = "2000-01-01", end = Sys.Date(),
           min = "1900-01-01", max = Sys.Date()
         ),
+        shiny::hr(),
+        shiny::sliderInput(ns("depth_range"), "Depth (m)", min = 0, max = 6000, value = c(0, 200), step = 50),
         shiny::hr(),
         shiny::sliderInput(ns("cell_km"), "Cell size (km)", min = 10, max = 250, value = 50, step = 10),
         shiny::selectInput(ns("metric"), "Summary metric",
@@ -34,13 +33,13 @@ MapSearchUI <- function(id) {
                              "Mean individual count (non-missing)" = "mean_abund",
                              "Sum individual count (non-missing)"  = "sum_abund"
                            ),
-                           selected = "n_occ"),
+                           selected = "n_occ"
+        ),
         shiny::conditionalPanel(
           sprintf("input['%s'] != 'spp_rich'", ns("metric")),
-          shiny::radioButtons(
-            ns("metric_scope"), "Scope for count/abundance",
-            choices = c("All selected taxa" = "all", "Single taxon" = "one"),
-            selected = "all", inline = TRUE
+          shiny::radioButtons(ns("metric_scope"), "Scope for count/abundance",
+                              choices  = c("All selected taxa" = "all", "Single taxon" = "one"),
+                              selected = "all", inline = TRUE
           )
         ),
         shiny::conditionalPanel(
@@ -48,10 +47,9 @@ MapSearchUI <- function(id) {
           shiny::selectInput(ns("metric_taxon"), "Taxon for metric", choices = character(0))
         ),
         shiny::hr(),
-        shiny::radioButtons(
-          ns("bin_mode"), "Legend binning",
-          choices = c("Equal width" = "equal", "Quantiles" = "quantile", "Custom cuts" = "custom"),
-          selected = "quantile"
+        shiny::radioButtons(ns("bin_mode"), "Legend binning",
+                            choices = c("Equal width" = "equal", "Quantiles" = "quantile", "Custom cuts" = "custom"),
+                            selected = "quantile"
         ),
         shiny::conditionalPanel(
           sprintf("input['%s'] == 'custom'", ns("bin_mode")),
@@ -90,6 +88,24 @@ MapSearchServer <- function(id) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     
+    # --- server-side selectize options ---
+    shiny::updateSelectizeInput(
+      session, "sp",
+      choices  = client_species$species,
+      selected = head(client_species$species, 3),
+      server   = TRUE
+    )
+    
+    # ---- Retry wrapper for OBIS calls ----
+    robis_try <- function(expr, tries = 3) {
+      for (i in seq_len(tries)) {
+        out <- tryCatch(force(expr), error = function(e) e)
+        if (!inherits(out, "error")) return(out)
+        Sys.sleep(POLITE_DELAY * i)
+      }
+      NULL
+    }
+    
     # ---- Inputs -> geometry -------------------------------------------------
     geom_wkt <- reactive({
       if (isTRUE(input$aus_only)) {
@@ -100,31 +116,131 @@ MapSearchServer <- function(id) {
       }
     })
     
+    # ---- Fetch with AphiaID → synonyms → name ------------------------------
+    .fetch_obis_id_or_name <- function(species_row, wkt = NULL, start = NULL, end = NULL) {
+      Sys.sleep(POLITE_DELAY)
+      
+      # 1) AphiaID
+      if ("aphia_id" %in% names(species_row) &&
+          !is.na(species_row$aphia_id) && species_row$aphia_id != "") {
+        return(robis_try(
+          robis::occurrence(
+            taxonid = species_row$aphia_id,
+            geometry = wkt,
+            startdate = if (!is.null(start)) as.Date(start) else NULL,
+            enddate   = if (!is.null(end))   as.Date(end)   else NULL
+          )
+        ))
+      }
+      
+      # 2) Synonyms
+      if ("synonyms" %in% names(species_row) && !is.na(species_row$synonyms)) {
+        syn_list <- unlist(strsplit(species_row$synonyms, ","))
+        for (syn in syn_list) {
+          df <- robis_try(
+            robis::occurrence(
+              scientificname = stringr::str_trim(syn),
+              geometry = wkt,
+              startdate = if (!is.null(start)) as.Date(start) else NULL,
+              enddate   = if (!is.null(end))   as.Date(end)   else NULL
+            )
+          )
+          if (!is.null(df) && is.data.frame(df) && nrow(df) > 0) return(df)
+        }
+      }
+      
+      # 3) Fallback: canonical name
+      robis_try(
+        robis::occurrence(
+          scientificname = species_row$species_canonical,
+          geometry = wkt,
+          startdate = if (!is.null(start)) as.Date(start) else NULL,
+          enddate   = if (!is.null(end))   as.Date(end)   else NULL
+        )
+      )
+    }
+    fetch_obis_id_or_name <- memoise::memoise(.fetch_obis_id_or_name)
+    
+    # ---- Binning helpers ----------------------------------------------------
+    make_bin_pal <- function(vals, mode = c("equal","quantile","custom"), cuts = c(0,5,10,20), n = 7) {
+      mode <- match.arg(mode)
+      vals_ok <- vals[is.finite(vals)]
+      if (length(vals_ok) == 0 || length(unique(vals_ok)) <= 1) {
+        return(leaflet::colorNumeric("viridis", domain = vals_ok, na.color = "#F0F0F0"))
+      }
+      if (mode == "quantile") {
+        q <- stats::quantile(vals_ok, probs = seq(0, 1, length.out = n), na.rm = TRUE)
+        brks <- unique(as.numeric(q))
+      } else if (mode == "custom") {
+        brks <- sort(unique(cuts))
+      } else {
+        rng <- range(vals_ok, na.rm = TRUE)
+        brks <- unique(pretty(rng, n = n))
+      }
+      brks <- sort(unique(c(-Inf, brks, Inf)))
+      if (length(brks) < 3) {
+        rng <- range(vals_ok, na.rm = TRUE)
+        brks <- sort(unique(c(-Inf, pretty(rng, n = 4), Inf)))
+      }
+      leaflet::colorBin("viridis", domain = vals_ok, bins = brks, na.color = "#F0F0F0")
+    }
+    parse_cuts <- function(txt) as.numeric(strsplit(gsub("\\s+", "", txt), ",")[[1]])
+    
+    # ---- Year range helper --------------------------------------------------
+    year_range_full <- function(sp, aphia_id = NULL) {
+      df <- robis_try({
+        if (!is.null(aphia_id) && !is.na(aphia_id) && aphia_id != "") {
+          robis::occurrence(taxonid = aphia_id, fields = c("eventDate"))
+        } else {
+          robis::occurrence(scientificname = sp, fields = c("eventDate"))
+        }
+      })
+      if (is.null(df) || !"eventDate" %in% names(df)) return("NA – NA")
+      yrs <- suppressWarnings(lubridate::year(lubridate::ymd(df$eventDate)))
+      yrs <- yrs[!is.na(yrs)]
+      if (length(yrs) == 0) return("NA – NA")
+      paste0(min(yrs), " – ", max(yrs))
+    }
+    
     # ---- Fetch + normalize observations ------------------------------------
     obis_df <- eventReactive(input$refresh, {
-      req(input$date_range)
+      req(input$date_range, input$depth_range)
       shiny::withProgress(message = "Querying OBIS …", value = 0, {
         sp_vec <- input$sp
-        if (length(sp_vec) == 0) return(tibble::tibble())
+        if (length(sp_vec) == 0) return(empty_obis_norm())
         n <- length(sp_vec)
+        
         dfs <- purrr::map(seq_along(sp_vec), function(i) {
           shiny::incProgress(i / n, detail = sp_vec[i])
-          df_raw <- tryCatch({
-            fetch_obis(  # <<— uses commons.R memoised fetcher
-              species = sp_vec[i], wkt = geom_wkt(),
-              start = input$date_range[1], end = input$date_range[2]
-            )
-          }, error = function(e) NULL)
-          normalize_obis(df_raw)  # <<— uses commons.R normaliser
+          row <- full_species |>
+            dplyr::filter(.data$species_canonical == sp_vec[i]) |>
+            dplyr::slice(1)
+          
+          df_raw <- fetch_obis_id_or_name(
+            species_row = row, wkt = geom_wkt(),
+            start = input$date_range[1], end = input$date_range[2]
+          )
+          
+          if (is.null(df_raw)) return(empty_obis_norm())   # tolerate OBIS outage
+          normalize_obis(df_raw)
         })
-        dplyr::bind_rows(dfs)
+        
+        df_all <- dplyr::bind_rows(dfs)
+        if (nrow(df_all) == 0) return(empty_obis_norm())
+        if (!"depth" %in% names(df_all)) df_all$depth <- NA_real_
+        
+        df_all |>
+          dplyr::filter(is.na(.data$depth) |
+                          dplyr::between(.data$depth, input$depth_range[1], input$depth_range[2]))
       })
     }, ignoreInit = TRUE)
     
-    # Update metric taxon choices
+    # Update metric taxon choices (defensive when empty)
     observeEvent(obis_df(), {
       df <- obis_df()
-      taxa <- sort(unique(df$scientificName[!is.na(df$scientificName)]))
+      taxa <- if ("scientificName" %in% names(df)) {
+        sort(unique(df$scientificName[!is.na(df$scientificName)]))
+      } else character(0)
       shiny::updateSelectInput(session, "metric_taxon", choices = taxa,
                                selected = if (length(taxa)) taxa[1] else character(0))
     })
@@ -132,22 +248,26 @@ MapSearchServer <- function(id) {
     # ---- Build grid + aggregate --------------------------------------------
     grid_data <- reactive({
       df <- obis_df()
-      if (nrow(df) == 0) return(NULL)
+      if (is.null(df) || nrow(df) == 0) return(NULL)
+      if (!all(c("decimalLongitude", "decimalLatitude") %in% names(df))) return(NULL)
+      if (all(is.na(df$decimalLongitude)) || all(is.na(df$decimalLatitude))) return(NULL)
       
-      pts <- sf::st_as_sf(df, coords = c("decimalLongitude","decimalLatitude"),
-                          crs = 4326, remove = FALSE) |>
-        sf::st_transform(3857)
+      pts <- tryCatch({
+        sf::st_as_sf(df, coords = c("decimalLongitude","decimalLatitude"),
+                     crs = 4326, remove = FALSE) |>
+          sf::st_transform(3857)
+      }, error = function(e) NULL)
+      if (is.null(pts) || nrow(pts) == 0) return(NULL)
       
       cell_m <- input$cell_km * 1000
       bbox <- sf::st_bbox(pts)
-      bb_sfc <- sf::st_as_sfc(bbox)
-      sf::st_crs(bb_sfc) <- sf::st_crs(pts)   # ensure CRS is set
-      grd <- sf::st_make_grid(bb_sfc, cellsize = cell_m, square = TRUE)
+      if (any(is.na(bbox)) || diff(bbox[c("xmin","xmax")]) == 0 || diff(bbox[c("ymin","ymax")]) == 0) return(NULL)
       
-      if (length(grd) == 0) return(NULL)
+      grd <- tryCatch({ sf::st_make_grid(sf::st_as_sfc(bbox), cellsize = cell_m, square = TRUE) }, error = function(e) NULL)
+      if (is.null(grd) || length(grd) == 0) return(NULL)
+      
       grid_sf <- sf::st_sf(cell_id = seq_along(grd), geometry = grd)
-      
-      joined <- sf::st_join(pts, grid_sf, left = FALSE)
+      joined  <- sf::st_join(pts, grid_sf, left = FALSE)
       if (nrow(joined) == 0) return(NULL)
       
       summ_all <- joined |>
@@ -174,36 +294,27 @@ MapSearchServer <- function(id) {
           .groups = "drop"
         )
       
-      list(
-        grid = sf::st_transform(grid_sf, 4326),
-        all  = summ_all,
-        by_taxon = summ_taxon
-      )
+      list(grid = sf::st_transform(grid_sf, 4326), all = summ_all, by_taxon = summ_taxon)
     })
     
     # ---- Map ---------------------------------------------------------------
-    # inside MapSearchServer(...)
     output$map <- leaflet::renderLeaflet({
       leaflet::leaflet() |>
         leaflet::addProviderTiles("CartoDB.Positron") |>
         leaflet::setView(lng = 120, lat = -20, zoom = 3)
     })
-    shiny::outputOptions(output, "map", suspendWhenHidden = FALSE)
-    
-    # ensure Leaflet recalculates after the DOM is visible
-    session$onFlushed(function(){
-      try(leaflet::leafletProxy("map", session = session) |> leaflet::invalidateSize(), silent = TRUE)
-    }, once = TRUE)
-    
-    
     
     observeEvent(list(grid_data(), input$metric, input$metric_scope,
                       input$metric_taxon, input$bin_mode, input$n_bins,
                       input$custom_cuts, input$show_centroids), {
                         gd <- grid_data()
-                        proxy <- leaflet::leafletProxy("map", session = session)
+                        proxy <- leaflet::leafletProxy(ns("map"))
                         proxy |> leaflet::clearShapes() |> leaflet::clearControls() |> leaflet::clearMarkers()
-                        if (is.null(gd)) return()
+                        
+                        if (is.null(gd)) {
+                          shiny::showNotification("No mappable records for current selection.", type = "message", duration = 4)
+                          return()
+                        }
                         
                         # selection rectangle
                         if (isTRUE(input$aus_only)) {
@@ -216,39 +327,71 @@ MapSearchServer <- function(id) {
                         }
                         
                         # compose metric
+                        metric_field <- NULL
                         if (input$metric == "spp_rich") {
                           dat <- gd$grid |>
-                            dplyr::inner_join(dplyr::transmute(gd$all, cell_id, value = .data$spp_rich), by = "cell_id")
+                            dplyr::inner_join(gd$all |> dplyr::transmute(cell_id, value = .data$spp_rich), by = "cell_id")
                           leg_title <- "Species richness"
+                          metric_field <- "spp_rich"
                         } else {
-                          metric_field <- switch(input$metric,
-                                                 n_occ = "n_occ", mean_abund = "mean_abund", sum_abund = "sum_abund")
+                          metric_field <- switch(input$metric, n_occ = "n_occ", mean_abund = "mean_abund", sum_abund = "sum_abund")
                           if (input$metric_scope == "all") {
                             dat <- gd$grid |>
-                              dplyr::inner_join(dplyr::transmute(gd$all, cell_id, value = .data[[metric_field]]), by = "cell_id")
+                              dplyr::inner_join(gd$all |> dplyr::transmute(cell_id, value = .data[[metric_field]]), by = "cell_id")
                             leg_title <- metric_field
                           } else {
                             req(input$metric_taxon)
                             tax_df <- gd$by_taxon |>
                               dplyr::filter(.data$taxon == input$metric_taxon) |>
                               dplyr::transmute(cell_id, value = .data[[metric_field]])
-                            if (nrow(tax_df) == 0) return()
+                            if (nrow(tax_df) == 0) {
+                              shiny::showNotification("No per-taxon records found for this cell/metric.", type = "warning", duration = 4)
+                              return()
+                            }
                             dat <- gd$grid |> dplyr::inner_join(tax_df, by = "cell_id")
                             leg_title <- paste(metric_field, input$metric_taxon)
                           }
                         }
                         
-                        if (nrow(dat) == 0) return()
+                        if (nrow(dat) == 0) {
+                          shiny::showNotification("No cells to display for current selection.", type = "message", duration = 4)
+                          return()
+                        }
+                        
                         vals <- dat$value
                         vals_ok <- vals[is.finite(vals)]
-                        if (length(vals_ok) == 0) return()
+                        if (length(vals_ok) == 0) {
+                          shiny::showNotification("All metric values are NA/zero.", type = "message", duration = 4)
+                          return()
+                        }
                         
-                        cent <- sf::st_centroid(dat$geometry)
-                        cent_xy <- sf::st_coordinates(cent)
-                        popup <- paste0("<b>Cell:</b> ", dat$cell_id, "<br/>Value: ", round(vals, 2))
+                        # popup content
+                        if (metric_field == "spp_rich") {
+                          species_summary <- gd$by_taxon |>
+                            dplyr::filter(.data$cell_id %in% dat$cell_id) |>
+                            dplyr::group_by(.data$cell_id) |>
+                            dplyr::summarise(
+                              popup_txt = paste0("<ul>", paste0("<li>", unique(.data$taxon), "</li>", collapse = ""), "</ul>"),
+                              .groups = "drop"
+                            )
+                        } else {
+                          species_summary <- gd$by_taxon |>
+                            dplyr::filter(.data$cell_id %in% dat$cell_id) |>
+                            dplyr::group_by(.data$cell_id) |>
+                            dplyr::summarise(
+                              popup_txt = paste0("<ul>", paste0("<li>", .data$taxon, ": ", round(.data[[metric_field]], 2), "</li>", collapse = ""), "</ul>"),
+                              .groups = "drop"
+                            )
+                        }
+                        dat <- dat |> dplyr::left_join(species_summary, by = "cell_id")
                         
-                        pal <- make_bin_pal(vals, mode = input$bin_mode,
-                                            cuts = parse_cuts(input$custom_cuts), n = input$n_bins)
+                        popup <- paste0(
+                          "<b>Cell:</b> ", dat$cell_id,
+                          "<br/><b>", leg_title, ":</b> ", round(dat$value, 2),
+                          "<br/><b>Species breakdown:</b>", dat$popup_txt
+                        )
+                        
+                        pal <- make_bin_pal(vals, mode = input$bin_mode, cuts = parse_cuts(input$custom_cuts), n = input$n_bins)
                         
                         proxy |>
                           leaflet::addPolygons(
@@ -258,17 +401,17 @@ MapSearchServer <- function(id) {
                             fillColor   = ifelse(is.na(vals) | vals == 0, "transparent", pal(vals)),
                             popup = popup
                           ) |>
-                          leaflet::addLegend("bottomright", pal = pal, values = vals,
-                                             title = leg_title, opacity = 1)
+                          leaflet::addLegend("bottomright", pal = pal, values = vals, title = leg_title, opacity = 1)
                         
                         if (isTRUE(input$show_centroids)) {
+                          cent <- sf::st_centroid(dat$geometry)
+                          cent_xy <- sf::st_coordinates(cent)
                           proxy |> leaflet::addCircleMarkers(lng = cent_xy[,1], lat = cent_xy[,2],
-                                                             radius = 2, stroke = FALSE, fillOpacity = 0.9,
-                                                             color = "#000000")
+                                                             radius = 2, stroke = FALSE, fillOpacity = 0.9, color = "#000000")
                         }
                       })
     
-    # ---- Summary table ------------------------------------------------------
+    # ---- Table --------------------------------------------------------------
     output$tbl <- DT::renderDT({
       gd <- grid_data()
       if (is.null(gd) || nrow(gd$all) == 0)
@@ -277,8 +420,7 @@ MapSearchServer <- function(id) {
       cent <- sf::st_centroid(dat$geometry)
       coords <- sf::st_coordinates(cent)
       out <- dat |> sf::st_drop_geometry() |>
-        dplyr::mutate(centroid_lon = round(coords[,1], 5),
-                      centroid_lat = round(coords[,2], 5))
+        dplyr::mutate(centroid_lon = round(coords[,1], 5), centroid_lat = round(coords[,2], 5))
       DT::datatable(out, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
     })
     
@@ -300,95 +442,52 @@ MapSearchServer <- function(id) {
     )
     
     # ---- Species Info -------------------------------------------------------
-    safe_val <- function(df, col) {
-      if (!is.null(df) && col %in% names(df)) as.character(df[[col]][1]) else NA
-    }
+    safe_val <- function(df, col) if (!is.null(df) && col %in% names(df)) as.character(df[[col]][1]) else NA
     
     species_info <- reactive({
       req(input$sp)
       if (length(input$sp) != 1) return(NULL)
-      sp <- input$sp
-      info <- tryCatch({ robis::taxon(sp) }, error = function(e) NULL)
-      checklist <- tryCatch({ robis::checklist(scientificname = sp) }, error = function(e) NULL)
-      list(info = info, checklist = checklist)
+      sp  <- input$sp
+      row <- full_species |>
+        dplyr::filter(.data$species_canonical == sp) |>
+        dplyr::slice(1)
+      info <- robis_try(robis::taxon(sp))
+      checklist <- robis_try(robis::checklist(scientificname = sp))
+      list(info = info, checklist = checklist, row = row)
     })
     
     output$species_info <- renderUI({
       dat <- species_info()
       if (is.null(dat)) return(htmltools::HTML("<p>Select a single species to see details.</p>"))
-      info <- dat$info
-      checklist <- dat$checklist
-      if ((is.null(info) || nrow(info) == 0) &&
-          (is.null(checklist) || nrow(checklist) == 0)) {
-        return(htmltools::HTML("<p><b>No background information available from OBIS.</b></p>"))
-      }
-      
-      yrange <- if (!is.null(checklist) && all(c("startyear","endyear") %in% names(checklist))) {
-        paste0(safe_val(checklist, "startyear"), " – ", safe_val(checklist, "endyear"))
-      } else {
-        year_range_from_occ(input$sp)
-      }
+      info <- dat$info; checklist <- dat$checklist; row <- dat$row
+      aphia <- if ("aphia_id" %in% names(row) && !is.na(row$aphia_id)) row$aphia_id else "None"
+      syns  <- if ("synonyms" %in% names(row) && !is.na(row$synonyms)) row$synonyms else "None"
+      yrange <- year_range_full(row$species_canonical, aphia)
       
       htmltools::tagList(
+        htmltools::h4("Identifiers"),
+        htmltools::HTML(paste0("<b>AphiaID:</b> ", aphia, "<br/><b>Synonyms:</b> ", syns, "<br/>")),
         htmltools::h4("Taxonomy"),
         if (!is.null(info) && nrow(info) > 0) {
           htmltools::HTML(paste0(
             "<b>Scientific name:</b> ", safe_val(info, "scientificname"), "<br/>",
-            "<b>AphiaID:</b> ", safe_val(info, "aphiaid"), "<br/>",
-            "<b>Status:</b> ", safe_val(info, "status"), "<br/>",
-            "<b>Environment:</b> ", safe_val(info, "environment"), "<br/>"
+            "<b>Status:</b> ",        safe_val(info, "status"), "<br/>",
+            "<b>Environment:</b> ",   safe_val(info, "environment"), "<br/>"
           ))
         },
         htmltools::h4("Checklist summary"),
         if (!is.null(checklist) && nrow(checklist) > 0) {
           htmltools::HTML(paste0(
             "<b>Total records:</b> ", safe_val(checklist, "records"), "<br/>",
-            "<b>Year range:</b> ", yrange, "<br/>",
-            "<b>Phylum:</b> ", safe_val(checklist, "phylum"), "<br/>",
-            "<b>Class:</b> ", safe_val(checklist, "class"), "<br/>",
-            "<b>Order:</b> ", safe_val(checklist, "order"), "<br/>",
-            "<b>Family:</b> ", safe_val(checklist, "family"), "<br/>",
-            "<b>Genus:</b> ", safe_val(checklist, "genus")
+            "<b>Year range:</b> ",    yrange, "<br/>",
+            "<b>Phylum:</b> ",        safe_val(checklist, "phylum"), "<br/>",
+            "<b>Class:</b> ",         safe_val(checklist, "class"), "<br/>",
+            "<b>Order:</b> ",         safe_val(checklist, "order"), "<br/>",
+            "<b>Family:</b> ",        safe_val(checklist, "family"), "<br/>",
+            "<b>Genus:</b> ",         safe_val(checklist, "genus")
           ))
         }
       )
-    })
-    
-    # ---- Species Plots ------------------------------------------------------
-    output$records_over_time <- renderPlot({
-      df <- obis_df()
-      if (nrow(df) == 0 || all(is.na(df$eventDate))) return(NULL)
-      ggplot2::ggplot(df, ggplot2::aes(lubridate::year(eventDate))) +
-        ggplot2::geom_bar(fill = "steelblue") +
-        ggplot2::labs(x = "Year", y = "Records", title = "Records over time") +
-        ggplot2::theme_minimal()
-    })
-    
-    output$depth_hist <- renderPlot({
-      df <- obis_df()
-      if (nrow(df) == 0 || all(is.na(df$depth))) return(NULL)
-      ggplot2::ggplot(df, ggplot2::aes(depth)) +
-        ggplot2::geom_histogram(fill = "darkorange", bins = 30) +
-        ggplot2::labs(x = "Depth (m)", y = "Count", title = "Depth distribution") +
-        ggplot2::theme_minimal()
-    })
-    
-    output$temp_hist <- renderPlot({
-      df <- obis_df()
-      if (nrow(df) == 0 || all(is.na(df$temperature))) return(NULL)
-      ggplot2::ggplot(df, ggplot2::aes(temperature)) +
-        ggplot2::geom_histogram(fill = "firebrick", bins = 20) +
-        ggplot2::labs(x = "Temperature (°C)", y = "Count", title = "Sea surface temperature") +
-        ggplot2::theme_minimal()
-    })
-    
-    output$sal_hist <- renderPlot({
-      df <- obis_df()
-      if (nrow(df) == 0 || all(is.na(df$salinity))) return(NULL)
-      ggplot2::ggplot(df, ggplot2::aes(salinity)) +
-        ggplot2::geom_histogram(fill = "darkgreen", bins = 20) +
-        ggplot2::labs(x = "Salinity (PSU)", y = "Count", title = "Sea surface salinity") +
-        ggplot2::theme_minimal()
     })
   })
 }
