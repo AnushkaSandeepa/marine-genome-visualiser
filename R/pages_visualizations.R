@@ -1,7 +1,5 @@
 # ===== File: R/pages_visualizations.R =====
-# Power BI tabs + Advanced visualizations (Python via reticulate + plotly)
-# Adds an "Other" tab that embeds Streamlit AND always shows a hyperlink above the card,
-# with a JS-based fallback if the iframe cannot load (blocked by X-Frame-Options / CSP).
+# Power BI tabs + External Streamlit embed (with hyperlink, spinner, and fallback)
 
 VizUI <- function(id) {
   ns <- NS(id)
@@ -15,16 +13,6 @@ VizUI <- function(id) {
       # --- Live, hard-wired embeds ---
       bslib::nav_panel("Distribution", shiny::uiOutput(ns("dist_panel"))),
       bslib::nav_panel("Progress",     shiny::uiOutput(ns("progress_panel"))),
-      
-      # --- Advanced: Python/Plotly (reticulate) ---
-      bslib::nav_panel(
-        "Advanced visualizations",
-        shiny::div(
-          class = "mb-2",
-          shiny::helpText("These plots are rendered from Python via reticulate (pandas + plotly).")
-        ),
-        shiny::uiOutput(ns("py_grid"))  # 2x2 grid of plot HTML
-      ),
       
       # --- External (Streamlit) ---
       bslib::nav_panel(
@@ -40,7 +28,8 @@ VizUI <- function(id) {
             4,
             shiny::radioButtons(
               ns("mode"), "Embed mode",
-              c("Public (Publish to web)" = "public", "Secure (Embed for your org)" = "secure"),
+              c("Public (Publish to web)" = "public",
+                "Secure (Embed for your org)" = "secure"),
               selected = "public"
             ),
             
@@ -49,12 +38,10 @@ VizUI <- function(id) {
               sprintf("input['%s'] === 'public'", ns("mode")),
               shiny::textInput(ns("public_url"),
                                "Publish-to-web URL (Distribution)",
-                               value = ""  # can paste another link here
-              ),
+                               value = ""),
               shiny::textInput(ns("progress_url"),
                                "Publish-to-web URL (Progress; optional)",
-                               value = ""  # can paste another link here
-              ),
+                               value = ""),
               shiny::numericInput(ns("public_h"),   "Distribution height (px)", 800, 400, 3000, 20),
               shiny::numericInput(ns("progress_h"), "Progress height (px)",     820, 400, 3000, 20),
               shiny::actionButton(ns("show_public"), "Preview in Testing", class = "btn-primary")
@@ -76,12 +63,26 @@ VizUI <- function(id) {
       )
     ),
     
-    # styles for containers
+    # ---- Styles ----
     htmltools::tags$head(
       htmltools::tags$style(htmltools::HTML("
         .pbi-container{width:100%;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;position:relative;background:#fff;}
         .pbi-iframe{width:100%;height:100%;border:0;}
-        .py-card{border:1px solid #e5e7eb;border-radius:12px;padding:8px;margin-bottom:16px;background:#fff;}
+        .panel-header{padding:8px 10px;font-weight:600;border-bottom:1px solid #eee;background:#fafafa;}
+
+        /* Spinner overlay inside the container */
+        .spinner-wrap{
+          position:absolute; inset:40px 0 0 0;
+          display:flex; align-items:center; justify-content:center;
+          background:linear-gradient(180deg,#fff,rgba(255,255,255,0.92));
+          z-index:2;
+        }
+        .spinner{
+          width:42px; height:42px; border-radius:50%;
+          border:4px solid #e5e7eb; border-top-color:#25a5c3;
+          animation:spin 0.9s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
       "))
     )
   )
@@ -96,23 +97,15 @@ VizServer <- function(id) {
     pbi_iframe <- function(url, height_px = 800, title = NULL) {
       if (is_blank(url)) {
         return(shiny::div(
-          class = "p-3 py-card",
+          class = "p-3",
           shiny::strong("No Power BI URL provided."),
           shiny::div("Paste a Publish-to-web URL or configure the secure embed.")
         ))
       }
       htmltools::tags$div(
         class = "pbi-container", style = sprintf("height:%dpx;", as.integer(height_px)),
-        if (!is_blank(title)) htmltools::tags$div(
-          style = "padding:8px 10px;font-weight:600;border-bottom:1px solid #eee;background:#fafafa;",
-          title
-        ),
-        htmltools::tags$iframe(
-          class = "pbi-iframe",
-          src = url,
-          allowfullscreen = NA,
-          frameborder = "0"
-        )
+        if (!is_blank(title)) htmltools::tags$div(class = "panel-header", title),
+        htmltools::tags$iframe(class = "pbi-iframe", src = url, allowfullscreen = NA, frameborder = "0")
       )
     }
     
@@ -130,87 +123,23 @@ VizServer <- function(id) {
       pbi_iframe(PROG_URL, height_px = 820, title = "Progress dashboard")
     })
     
-    # ---------- Advanced tab: Python plots via reticulate ----------
-    # Find project root (folder that contains both R/ and python/)
-    find_app_root <- function() {
-      d <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
-      for (i in 1:8) {
-        if (dir.exists(file.path(d, "R")) && dir.exists(file.path(d, "python"))) return(d)
-        parent <- dirname(d); if (identical(parent, d)) break; d <- parent
-      }
-      stop("Couldn't locate project root containing 'R/' and 'python/'. Current getwd(): ", getwd())
-    }
-    
-    app_root <- find_app_root()
-    py_dir   <- file.path(app_root, "python")
-    py_file  <- file.path(py_dir, "ocean_genomes_pyvis.py")
-    csv_path <- file.path(app_root, "CSV", "new_final_species.csv")
-    
-    # Make sure Python can see the python/ folder, then import the module
-    reticulate::py_run_string(sprintf(
-      "import sys; p=r'%s';\nif p not in sys.path: sys.path.insert(0, p)",
-      normalizePath(py_dir, winslash = "/", mustWork = TRUE)
-    ))
-    
-    py_mod <- try(reticulate::import("ocean_genomes_pyvis", convert = TRUE), silent = TRUE)
-    if (inherits(py_mod, "try-error") || is.null(py_mod)) {
-      ok <- try(reticulate::source_python(py_file), silent = TRUE)
-      if (inherits(ok, "try-error"))
-        stop("Import failed. Checked absolute file: ", py_file,
-             "\nTip: ensure pandas+plotly are installed in reticulate's Python (e.g., install.packages('reticulate'); reticulate::py_install(c('pandas','plotly')) ).")
-    }
-    
-    output$py_grid <- shiny::renderUI({
-      out <- try({
-        if (exists("render_all_html", mode = "function", inherits = TRUE)) {
-          render_all_html(csv_path)                 # sourced: global R wrapper
-        } else {
-          py_mod$render_all_html(csv_path)          # imported module
-        }
-      }, silent = TRUE)
-      
-      if (inherits(out, "try-error") || is.null(out)) {
-        err <- tryCatch(reticulate::py_last_error(), error = function(e) NULL)
-        return(shiny::div(
-          class = "py-card",
-          shiny::strong("Python error while rendering plots."),
-          shiny::br(), "CSV path used: ", csv_path,
-          if (!is.null(err)) shiny::tags$pre(paste(err$type, err$value, sep = ": "))
-        ))
-      }
-      
-      html <- function(k)
-        if (!is.null(out[[k]]) && nzchar(out[[k]])) htmltools::HTML(out[[k]]) else shiny::div()
-      
-      shiny::tagList(
-        shiny::fluidRow(
-          shiny::column(6, shiny::div(class = "py-card", html("plot1"))),
-          shiny::column(6, shiny::div(class = "py-card", html("plot2")))
-        ),
-        shiny::fluidRow(
-          shiny::column(6, shiny::div(class = "py-card", html("plot3"))),
-          shiny::column(6, shiny::div(class = "py-card", html("plot4")))
-        )
-      )
-    })
-    
-    # ---------- "Other" tab: hyperlink + embed Streamlit with fallback ----------
+    # ---------- "Other" tab: hyperlink + embed Streamlit with spinner + fallback ----------
     OTHER_URL <- "https://ocean-genomes-dashboard.streamlit.app/?embed=true"
     
     output$other_panel <- shiny::renderUI({
       container_id <- ns("other_iframe_container")
       iframe_id    <- ns("other_iframe")
       fb_id        <- ns("other_fallback")
+      spin_id      <- ns("other_spinner")
       
       htmltools::tagList(
-        # Always-visible hyperlink (opens in new tab)
+        # Always-visible hyperlink (opens in new tab) with top/bottom padding
         shiny::div(
-          class = "",
-          style = "padding-top:20px; padding-bottom:20px;", 
+          style = "padding-top:20px; padding-bottom:20px;",
           shiny::a(
-            href = "https://ocean-genomes-dashboard.streamlit.app/",
+            href   = "https://ocean-genomes-dashboard.streamlit.app/",
             target = "_blank", rel = "noopener",
-            class = "btn btn-primary",
+            class  = "btn btn-primary",
             "Open Ocean Genomes (Streamlit) in a new tab"
           )
         ),
@@ -220,25 +149,31 @@ VizServer <- function(id) {
           id = container_id,
           class = "pbi-container",
           style = "height:900px;",
+          
+          # Card header
+          htmltools::tags$div(class = "panel-header", "Ocean Genomes (Streamlit)"),
+          
+          # Spinner overlay (visible by default, hidden on load)
           htmltools::tags$div(
-            style = "padding:8px 10px;font-weight:600;border-bottom:1px solid #eee;background:#fafafa;",
-            "Ocean Genomes (Streamlit)"
+            id = spin_id, class = "spinner-wrap",
+            htmltools::tags$div(class = "spinner"),
+            htmltools::tags$div(style = "margin-left:10px; font-weight:500; color:#374151;", "Loading dashboard…")
           ),
+          
           # iframe attempt
           htmltools::tags$iframe(
-            id = iframe_id,
-            class = "pbi-iframe",
+            id = iframe_id, class = "pbi-iframe",
             src = OTHER_URL,
             allow = "clipboard-read; clipboard-write; fullscreen",
             frameborder = "0"
           ),
+          
           # Fallback message if iframe won't load
           htmltools::tags$div(
             id = fb_id,
             style = "display:none; padding:16px;",
             htmltools::tags$strong("The site didn’t display inside the app."),
             htmltools::tags$p("Some websites block embedding (X-Frame-Options / CSP). Use the button above to open it."),
-            # extra link here too, just in case
             htmltools::tags$a(
               href = "https://ocean-genomes-dashboard.streamlit.app/",
               target = "_blank", rel = "noopener",
@@ -248,25 +183,38 @@ VizServer <- function(id) {
           )
         ),
         
-        # Tiny JS: if iframe doesn't load within 2.5s, show fallback text
+        # JS:
+        # 1) Hide spinner when the iframe loads.
+        # 2) If no 'load' within 3s, assume blocked and show fallback (hide spinner).
+        # 3) Extra guard: if 'load' fires but still cross-origin blocked visually, keep as-is.
         htmltools::tags$script(htmltools::HTML(sprintf("
           (function(){
-            var iframe = document.getElementById('%s');
+            var iframe   = document.getElementById('%s');
             var fallback = document.getElementById('%s');
-            var loaded = false;
+            var spinner  = document.getElementById('%s');
             if (!iframe) return;
-            iframe.addEventListener('load', function(){ loaded = true; }, { once: true });
+
+            var loaded = false;
+            iframe.addEventListener('load', function(){
+              loaded = true;
+              if (spinner) spinner.style.display = 'none';
+              // Keep fallback hidden if we got a real load event
+              if (fallback) fallback.style.display = 'none';
+            }, { once: true });
+
             setTimeout(function(){
-              if (!loaded && fallback) { fallback.style.display = 'block'; }
-            }, 2500);
+              if (!loaded) {
+                if (spinner)  spinner.style.display  = 'none';
+                if (fallback) fallback.style.display = 'block';
+              }
+            }, 3000);
           })();
-        ", iframe_id, fb_id)))
+        ", iframe_id, fb_id, spin_id)))
       )
     })
     
     # ---------- Testing tab logic ----------
     observeEvent(input$show_public, {
-      # If nothing entered, fall back to the hard-wired links so Testing still shows something useful.
       url_a <- if (!is_blank(input$public_url)) input$public_url else DIST_URL
       url_b <- if (!is_blank(input$progress_url)) input$progress_url else PROG_URL
       
@@ -280,10 +228,9 @@ VizServer <- function(id) {
     }, ignoreInit = TRUE)
     
     observeEvent(input$show_secure, {
-      # Minimal secure embed placeholder (your JS SDK/token workflow would live here)
       if (is_blank(input$embed_url)) {
         output$pbi_view <- shiny::renderUI(shiny::div(
-          class = "py-card",
+          class = "p-3",
           shiny::strong("Secure embed requires a valid Embed URL."),
           shiny::div("Tip: supply Workspace ID, Report ID, Embed URL, and an Embed Token.")
         ))
