@@ -1,5 +1,7 @@
 # ===== File: R/pages_visualizations.R =====
-# Power BI tabs + Advanced visualizations (Python via reticulate)
+# Power BI tabs + Advanced visualizations (Python via reticulate + plotly)
+# Adds an "Other" tab that embeds Streamlit AND always shows a hyperlink above the card,
+# with a JS-based fallback if the iframe cannot load (blocked by X-Frame-Options / CSP).
 
 VizUI <- function(id) {
   ns <- NS(id)
@@ -10,20 +12,27 @@ VizUI <- function(id) {
     bslib::navs_tab(
       id = ns("viz_tabs"),
       
-      # Live, hard-wired embeds
+      # --- Live, hard-wired embeds ---
       bslib::nav_panel("Distribution", shiny::uiOutput(ns("dist_panel"))),
       bslib::nav_panel("Progress",     shiny::uiOutput(ns("progress_panel"))),
       
-      # ---------- Advanced: Python/Plotly (reticulate) ----------
+      # --- Advanced: Python/Plotly (reticulate) ---
       bslib::nav_panel(
         "Advanced visualizations",
-        shiny::div(class = "mb-2",
-                   shiny::helpText("These plots are rendered from Python via reticulate (pandas + plotly).")
+        shiny::div(
+          class = "mb-2",
+          shiny::helpText("These plots are rendered from Python via reticulate (pandas + plotly).")
         ),
         shiny::uiOutput(ns("py_grid"))  # 2x2 grid of plot HTML
       ),
       
-      # ---------- Testing (allows overriding links at runtime) ----------
+      # --- External (Streamlit) ---
+      bslib::nav_panel(
+        "Other",
+        shiny::uiOutput(ns("other_panel"))
+      ),
+      
+      # --- Testing (allows overriding links at runtime) ---
       bslib::nav_panel(
         "Testing",
         shiny::fluidRow(
@@ -185,7 +194,74 @@ VizServer <- function(id) {
       )
     })
     
-    # (Removed the stray observer that overwrote output$py_grid)
+    # ---------- "Other" tab: hyperlink + embed Streamlit with fallback ----------
+    OTHER_URL <- "https://ocean-genomes-dashboard.streamlit.app/?embed=true"
+    
+    output$other_panel <- shiny::renderUI({
+      container_id <- ns("other_iframe_container")
+      iframe_id    <- ns("other_iframe")
+      fb_id        <- ns("other_fallback")
+      
+      htmltools::tagList(
+        # Always-visible hyperlink (opens in new tab)
+        shiny::div(
+          class = "py-card",
+          shiny::a(
+            href = "https://ocean-genomes-dashboard.streamlit.app/",
+            target = "_blank", rel = "noopener",
+            class = "btn btn-primary",
+            "Open Ocean Genomes (Streamlit) in a new tab"
+          )
+        ),
+        
+        # The embedded card
+        htmltools::tags$div(
+          id = container_id,
+          class = "pbi-container",
+          style = "height:900px;",
+          htmltools::tags$div(
+            style = "padding:8px 10px;font-weight:600;border-bottom:1px solid #eee;background:#fafafa;",
+            "Ocean Genomes (Streamlit)"
+          ),
+          # iframe attempt
+          htmltools::tags$iframe(
+            id = iframe_id,
+            class = "pbi-iframe",
+            src = OTHER_URL,
+            allow = "clipboard-read; clipboard-write; fullscreen",
+            frameborder = "0"
+          ),
+          # Fallback message if iframe won't load
+          htmltools::tags$div(
+            id = fb_id,
+            style = "display:none; padding:16px;",
+            htmltools::tags$strong("The site didn’t display inside the app."),
+            htmltools::tags$p("Some websites block embedding (X-Frame-Options / CSP). Use the button above to open it."),
+            # extra link here too, just in case
+            htmltools::tags$a(
+              href = "https://ocean-genomes-dashboard.streamlit.app/",
+              target = "_blank", rel = "noopener",
+              class = "btn btn-outline-secondary",
+              "Open in a new tab"
+            )
+          )
+        ),
+        
+        # Tiny JS: if iframe doesn't load within 2.5s, show fallback text
+        htmltools::tags$script(htmltools::HTML(sprintf("
+          (function(){
+            var iframe = document.getElementById('%s');
+            var fallback = document.getElementById('%s');
+            var loaded = false;
+            if (!iframe) return;
+            iframe.addEventListener('load', function(){ loaded = true; }, { once: true });
+            setTimeout(function(){
+              if (!loaded && fallback) { fallback.style.display = 'block'; }
+            }, 2500);
+          })();
+        ", iframe_id, fb_id)))
+      )
+    })
     
     # ---------- Testing tab logic ----------
     observeEvent(input$show_public, {

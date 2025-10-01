@@ -39,18 +39,18 @@ ui <- tagList(
         
         # images / fonts you use in www/
         "img-src 'self' data: blob: https://*.basemaps.cartocdn.com https://cartodb-basemaps-a.global.ssl.fastly.net https://cartodb-basemaps-b.global.ssl.fastly.net https://cartodb-basemaps-c.global.ssl.fastly.net;",
-
         "font-src  'self' data:;",
         
         # outbound fetches (Power BI may call other MS endpoints)
         "connect-src 'self' https://*.powerbi.com https://*.microsoft.com;",
         
-        # 🔑 allow embedding these sites inside your app
-        "frame-src 'self' https://app.powerbi.com https://*.powerbi.com;",
+        # ✅ allow embedding Power BI **and** Streamlit
+        "frame-src 'self' https://app.powerbi.com https://*.powerbi.com https://*.streamlit.app;",
         # legacy fallback (some browsers still honor child-src)
-        "child-src 'self' https://app.powerbi.com https://*.powerbi.com;"
+        "child-src 'self' https://app.powerbi.com https://*.powerbi.com https://*.streamlit.app;"
       )
-    ),
+    )
+    ,
     
     # Navbar link colors / states
     tags$style(HTML("
