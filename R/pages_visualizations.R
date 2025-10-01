@@ -205,7 +205,8 @@ VizServer <- function(id) {
       htmltools::tagList(
         # Always-visible hyperlink (opens in new tab)
         shiny::div(
-          class = "py-card",
+          class = "",
+          style = "padding-top:20px; padding-bottom:20px;", 
           shiny::a(
             href = "https://ocean-genomes-dashboard.streamlit.app/",
             target = "_blank", rel = "noopener",
