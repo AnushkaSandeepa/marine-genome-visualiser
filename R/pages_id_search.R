@@ -49,20 +49,13 @@ IDSearchUI <- function(id) {
           "ID(s) (comma or space separated)",
           placeholder = "e.g. AphiaID: 275731  (or multiple: 275731, 141433, 1080)"
         ),
-        shiny::actionButton(ns("go"), "Search", class = "btn-primary"),
-        htmltools::hr(),
-        htmltools::div(class="muted", "Extra data CSV"),
-        shiny::fileInput(ns("extra_csv"), NULL, buttonLabel = "Upload CSV…",
-                         accept = c(".csv"), multiple = FALSE)
+        shiny::actionButton(ns("go"), "Search", class = "btn-primary")
       ),
       shiny::mainPanel(
         htmltools::div(
           style = "display:flex; align-items:center; gap:10px; margin-bottom:8px;",
           htmltools::span("Status:"),
-          htmltools::strong(textOutput(ns("status"), inline = TRUE)),
-          htmltools::span(class="muted", style="margin-left:8px;",
-                          textOutput(ns("extra_status"), inline = TRUE)
-          )
+          htmltools::strong(textOutput(ns("status"), inline = TRUE))
         ),
         shinycssloaders::withSpinner(
           uiOutput(ns("cards")),
@@ -89,7 +82,7 @@ IDSearchServer <- function(id) {
     requireNamespace("shinyjs")
     requireNamespace("tidyr")
     
-    # ---------------- Extra CSV handling ----------------
+    # ---------------- Extra CSV handling (auto-load only; upload removed) ----------------
     # EXCLUDES: rank, order, Genus (to avoid overriding WoRMS)
     EXTRA_KEEP <- c(
       "aphia_id","ncbi_taxon_id","species_canonical","all_synonyms","publication_id",
@@ -100,8 +93,9 @@ IDSearchServer <- function(id) {
       "length_max_in_cm","common_length_in_cm","weight_max_in_g","TempMin","TempMax"
     )
     BINARY_COLS <- c("ismarine","isbrackish","isfreshwater","isterrestrial")
+    # Do not display these fields in the UI
+    DISPLAY_EXCLUDE <- c("ismarine", "isbrackish", "isfreshwater", "isterrestrial")
     
-    # --- helpers for cleaning & keys ---
     normalize_binaries <- function(df) {
       if (is.null(df) || !nrow(df)) return(df)
       nm <- intersect(BINARY_COLS, names(df))
@@ -171,21 +165,6 @@ IDSearchServer <- function(id) {
     }
     auto_load_extra()
     
-    observeEvent(input$extra_csv, {
-      req(input$extra_csv$datapath)
-      df <- tryCatch(
-        readr::read_csv(input$extra_csv$datapath, show_col_types = FALSE, progress = FALSE),
-        error = function(e) NULL
-      )
-      if (!is.null(df)) extra_df(clean_extra(df))
-    })
-    
-    output$extra_status <- shiny::renderText({
-      df <- extra_df()
-      if (is.null(df)) "Extra: none loaded"
-      else paste0("Extra: ", nrow(df), " rows")
-    })
-    
     # ---------------- UI helpers ----------------
     display <- function(x) {
       if (is.null(x) || length(x) == 0) return("—")
@@ -212,7 +191,7 @@ IDSearchServer <- function(id) {
         htmltools::tags$div(class="v", yn_badge(value))
       )
     }
-    # CSV or WoRMS fallback for a boolean-like field
+    # CSV or WoRMS fallback for a boolean-like field (kept for future use)
     val_of <- function(row, nm_lower, nm_camel = NULL) {
       v1 <- if (nm_lower  %in% names(row)) suppressWarnings(as.integer(row[[nm_lower]][[1]])) else NA_integer_
       v2 <- if (!is.null(nm_camel) && nm_camel %in% names(row)) suppressWarnings(as.integer(row[[nm_camel]][[1]])) else NA_integer_
@@ -451,7 +430,7 @@ IDSearchServer <- function(id) {
       }
     }, ignoreInit = TRUE)
     
-    # ---------------- Enrichment with Extra CSV (Aphia first, then NCBI coalesce) ----------------
+    # ---------------- Enrichment with Extra CSV (auto-loaded only) ----------------
     enrich_with_extra <- function(df, extra) {
       if (is.null(extra) || !nrow(extra) || !nrow(df)) return(df)
       
@@ -590,7 +569,7 @@ IDSearchServer <- function(id) {
           )
         }
         
-        # MAIN GRID: merged 'Query' line + WoRMS attrs + boolean badges
+        # MAIN GRID: merged 'Query' line + WoRMS attrs (HIDE the four flags)
         main_grid <- htmltools::tags$div(
           class = "kv-grid",
           kv("Query", paste0(display(row$type), " - ", display(row$query_id))),
@@ -603,16 +582,13 @@ IDSearchServer <- function(id) {
           kv("Order", row$order),
           kv("Family", row$family),
           kv("Genus", row$genus),
-          kv_bool("isMarine",      val_of(row, "ismarine",    "isMarine")),  # CSV or WoRMS
-          kv_bool("isBrackish",    val_of(row, "isbrackish")),
-          kv_bool("isFreshwater",  val_of(row, "isfreshwater")),
-          kv_bool("isTerrestrial", val_of(row, "isterrestrial")),
           kv("Note", row$note)
         )
         
-        # EXTRA ATTRIBUTES (skip aphia_id/ncbi_taxon_id)
+        # EXTRA ATTRIBUTES (skip aphia_id/ncbi_taxon_id and the four flags)
         extra_pairs <- list()
         for (nm in setdiff(tolower(EXTRA_KEEP), c("aphia_id","ncbi_taxon_id"))) {
+          if (nm %in% DISPLAY_EXCLUDE) next  # hide ismarine/isbrackish/isfreshwater/isterrestrial
           if (nm %in% names(row)) {
             val <- row[[nm]][[1]]
             if (!is.null(val) && !is.na(val) && nzchar(as.character(val))) {
