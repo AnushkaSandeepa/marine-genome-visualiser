@@ -10,6 +10,11 @@ install.packages(c(
 ))
 
 
+# if u wanna reconnect
+unlink("manifest.json")
+rsconnect::writeManifest(appDir = ".")
+
+
 # 2) Regenerate manifest (updates the "platform" field to 4.4.3)
 install.packages("rsconnect")
 rsconnect::writeManifest(
