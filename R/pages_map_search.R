@@ -1,4 +1,33 @@
 # ===== File: R/pages_map_search.R =====
+suppressPackageStartupMessages({
+  library(shiny); library(leaflet); library(DT)
+  library(sf); library(purrr); library(dplyr); library(readr); library(stringr)
+})
+
+# ---- helpers that read from full_species / COL_* (defined in commons.R) ----
+csv_ids_for_aphia <- function(aph) {
+  if (is.na(aph)) return(list(ncbi = NA_integer_, sci = NA_character_))
+  row <- tryCatch({
+    full_species %>%
+      filter(.data[[COL_APHIA]] == aph) %>%
+      slice(1)
+  }, error = function(e) tibble())
+  list(
+    ncbi = if (nrow(row) && !is.na(COL_NCBI) && COL_NCBI %in% names(row))
+      suppressWarnings(as.integer(row[[COL_NCBI]])) else NA_integer_,
+    sci  = if (nrow(row) && "species_canonical" %in% names(row))
+      as.character(row$species_canonical[[1]]) else NA_character_
+  )
+}
+
+make_taxon_label <- function(aph, name = NA_character_) {
+  ids <- csv_ids_for_aphia(aph)
+  nm  <- ifelse(!is.na(name) && nzchar(name), name,
+                ifelse(!is.na(ids$sci) && nzchar(ids$sci), ids$sci, "(unknown)"))
+  paste0(nm,
+         "  (AphiaID:", ifelse(is.na(aph), "-", aph),
+         ", NCBI:", ifelse(is.na(ids$ncbi), "-", ids$ncbi), ")")
+}
 
 MapSearchUI <- function(id) {
   ns <- NS(id)
@@ -6,10 +35,14 @@ MapSearchUI <- function(id) {
     shiny::titlePanel("Ocean Genome Explorer"),
     shiny::sidebarLayout(
       shiny::sidebarPanel(
-        # Server-side selectize to handle large option sets
         shiny::selectizeInput(
-          ns("sp"), "Species",
-          choices = NULL, multiple = TRUE
+          ns("sp"),
+          "Species / AphiaID / NCBI",
+          choices = NULL, multiple = TRUE,
+          options = list(
+            create = TRUE, createOnBlur = TRUE, persist = TRUE, selectOnTab = TRUE,
+            placeholder = "Type a name (incl. synonyms), aphia:12345, ncbi:67890, or a number"
+          )
         ),
         shiny::checkboxInput(ns("aus_only"), "Limit to Australia region", value = TRUE),
         shiny::conditionalPanel(
@@ -42,6 +75,7 @@ MapSearchUI <- function(id) {
                               selected = "all", inline = TRUE
           )
         ),
+        # values = AphiaIDs; labels = "Name (AphiaID, NCBI)"
         shiny::conditionalPanel(
           sprintf("input['%s'] != 'spp_rich' && input['%s'] == 'one'", ns("metric"), ns("metric_scope")),
           shiny::selectInput(ns("metric_taxon"), "Taxon for metric", choices = character(0))
@@ -88,25 +122,14 @@ MapSearchServer <- function(id) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     
-    # --- server-side selectize options ---
+    # suggestions = species names (IDs can still be typed in)
     shiny::updateSelectizeInput(
       session, "sp",
       choices  = client_species$species,
-      selected = head(client_species$species, 3),
+      selected = head(client_species$species, 1),
       server   = TRUE
     )
     
-    # ---- Retry wrapper for OBIS calls ----
-    robis_try <- function(expr, tries = 3) {
-      for (i in seq_len(tries)) {
-        out <- tryCatch(force(expr), error = function(e) e)
-        if (!inherits(out, "error")) return(out)
-        Sys.sleep(POLITE_DELAY * i)
-      }
-      NULL
-    }
-    
-    # ---- Inputs -> geometry -------------------------------------------------
     geom_wkt <- reactive({
       if (isTRUE(input$aus_only)) {
         bbox_wkt(110, -45, 160, -10)
@@ -116,118 +139,35 @@ MapSearchServer <- function(id) {
       }
     })
     
-    # ---- Fetch with AphiaID → synonyms → name ------------------------------
-    .fetch_obis_id_or_name <- function(species_row, wkt = NULL, start = NULL, end = NULL) {
-      Sys.sleep(POLITE_DELAY)
-      
-      # 1) AphiaID
-      if ("aphia_id" %in% names(species_row) &&
-          !is.na(species_row$aphia_id) && species_row$aphia_id != "") {
-        return(robis_try(
-          robis::occurrence(
-            taxonid = species_row$aphia_id,
-            geometry = wkt,
-            startdate = if (!is.null(start)) as.Date(start) else NULL,
-            enddate   = if (!is.null(end))   as.Date(end)   else NULL
-          )
-        ))
-      }
-      
-      # 2) Synonyms
-      if ("synonyms" %in% names(species_row) && !is.na(species_row$synonyms)) {
-        syn_list <- unlist(strsplit(species_row$synonyms, ","))
-        for (syn in syn_list) {
-          df <- robis_try(
-            robis::occurrence(
-              scientificname = stringr::str_trim(syn),
-              geometry = wkt,
-              startdate = if (!is.null(start)) as.Date(start) else NULL,
-              enddate   = if (!is.null(end))   as.Date(end)   else NULL
-            )
-          )
-          if (!is.null(df) && is.data.frame(df) && nrow(df) > 0) return(df)
-        }
-      }
-      
-      # 3) Fallback: canonical name
-      robis_try(
-        robis::occurrence(
-          scientificname = species_row$species_canonical,
-          geometry = wkt,
-          startdate = if (!is.null(start)) as.Date(start) else NULL,
-          enddate   = if (!is.null(end))   as.Date(end)   else NULL
-        )
-      )
-    }
-    fetch_obis_id_or_name <- memoise::memoise(.fetch_obis_id_or_name)
-    
-    # ---- Binning helpers ----------------------------------------------------
-    make_bin_pal <- function(vals, mode = c("equal","quantile","custom"), cuts = c(0,5,10,20), n = 7) {
-      mode <- match.arg(mode)
-      vals_ok <- vals[is.finite(vals)]
-      if (length(vals_ok) == 0 || length(unique(vals_ok)) <= 1) {
-        return(leaflet::colorNumeric("viridis", domain = vals_ok, na.color = "#F0F0F0"))
-      }
-      if (mode == "quantile") {
-        q <- stats::quantile(vals_ok, probs = seq(0, 1, length.out = n), na.rm = TRUE)
-        brks <- unique(as.numeric(q))
-      } else if (mode == "custom") {
-        brks <- sort(unique(cuts))
-      } else {
-        rng <- range(vals_ok, na.rm = TRUE)
-        brks <- unique(pretty(rng, n = n))
-      }
-      brks <- sort(unique(c(-Inf, brks, Inf)))
-      if (length(brks) < 3) {
-        rng <- range(vals_ok, na.rm = TRUE)
-        brks <- sort(unique(c(-Inf, pretty(rng, n = 4), Inf)))
-      }
-      leaflet::colorBin("viridis", domain = vals_ok, bins = brks, na.color = "#F0F0F0")
-    }
-    parse_cuts <- function(txt) as.numeric(strsplit(gsub("\\s+", "", txt), ",")[[1]])
-    
-    # ---- Year range helper --------------------------------------------------
-    year_range_full <- function(sp, aphia_id = NULL) {
-      df <- robis_try({
-        if (!is.null(aphia_id) && !is.na(aphia_id) && aphia_id != "") {
-          robis::occurrence(taxonid = aphia_id, fields = c("eventDate"))
-        } else {
-          robis::occurrence(scientificname = sp, fields = c("eventDate"))
-        }
-      })
-      if (is.null(df) || !"eventDate" %in% names(df)) return("NA – NA")
-      yrs <- suppressWarnings(lubridate::year(lubridate::ymd(df$eventDate)))
-      yrs <- yrs[!is.na(yrs)]
-      if (length(yrs) == 0) return("NA – NA")
-      paste0(min(yrs), " – ", max(yrs))
-    }
-    
-    # ---- Fetch + normalize observations ------------------------------------
+    # ---- Fetch + normalize (stamp resolved Aphia AFTER normalization) ------
     obis_df <- eventReactive(input$refresh, {
       req(input$date_range, input$depth_range)
-      shiny::withProgress(message = "Querying OBIS …", value = 0, {
+      withProgress(message = "Querying OBIS …", value = 0, {
         sp_vec <- input$sp
         if (length(sp_vec) == 0) return(empty_obis_norm())
         n <- length(sp_vec)
         
         dfs <- purrr::map(seq_along(sp_vec), function(i) {
-          shiny::incProgress(i / n, detail = sp_vec[i])
-          row <- full_species |>
-            dplyr::filter(.data$species_canonical == sp_vec[i]) |>
-            dplyr::slice(1)
+          incProgress(i / n, detail = sp_vec[i])
           
-          df_raw <- fetch_obis_id_or_name(
-            species_row = row, wkt = geom_wkt(),
-            start = input$date_range[1], end = input$date_range[2]
+          df_raw <- get_obis_by_query(
+            q = sp_vec[i],
+            geometry  = geom_wkt(),
+            startdate = input$date_range[1],
+            enddate   = input$date_range[2]
           )
+          if (!is.data.frame(df_raw) || nrow(df_raw) == 0) return(empty_obis_norm())
           
-          if (is.null(df_raw)) return(empty_obis_norm())   # tolerate OBIS outage
-          normalize_obis(df_raw)
+          # ✅ keep column by adding it AFTER normalization
+          df_norm <- normalize_obis(df_raw)
+          df_norm$resolvedAphia <- resolve_to_aphia(sp_vec[i])
+          df_norm
         })
         
         df_all <- dplyr::bind_rows(dfs)
         if (nrow(df_all) == 0) return(empty_obis_norm())
         if (!"depth" %in% names(df_all)) df_all$depth <- NA_real_
+        if (!"resolvedAphia" %in% names(df_all)) df_all$resolvedAphia <- NA_integer_
         
         df_all |>
           dplyr::filter(is.na(.data$depth) |
@@ -235,17 +175,7 @@ MapSearchServer <- function(id) {
       })
     }, ignoreInit = TRUE)
     
-    # Update metric taxon choices (defensive when empty)
-    observeEvent(obis_df(), {
-      df <- obis_df()
-      taxa <- if ("scientificName" %in% names(df)) {
-        sort(unique(df$scientificName[!is.na(df$scientificName)]))
-      } else character(0)
-      shiny::updateSelectInput(session, "metric_taxon", choices = taxa,
-                               selected = if (length(taxa)) taxa[1] else character(0))
-    })
-    
-    # ---- Build grid + aggregate --------------------------------------------
+    # ---- Build grid + aggregate (BY cell × AphiaID) ------------------------
     grid_data <- reactive({
       df <- obis_df()
       if (is.null(df) || nrow(df) == 0) return(NULL)
@@ -282,19 +212,39 @@ MapSearchServer <- function(id) {
           .groups = "drop"
         )
       
-      summ_taxon <- joined |>
+      by_taxon <- joined |>
         sf::st_drop_geometry() |>
-        dplyr::filter(!is.na(.data$scientificName)) |>
-        dplyr::group_by(.data$cell_id, taxon = .data$scientificName) |>
+        dplyr::mutate(aphia = suppressWarnings(as.integer(.data$resolvedAphia))) |>
+        dplyr::filter(!is.na(.data$aphia)) |>
+        dplyr::group_by(.data$cell_id, .data$aphia) |>
         dplyr::summarise(
-          n_occ = dplyr::n(),
+          taxon_name   = dplyr::first(na.omit(.data$scientificName)),
+          n_occ        = dplyr::n(),
           n_with_abund = sum(!is.na(.data$individualCount)),
-          mean_abund = ifelse(n_with_abund > 0, mean(.data$individualCount, na.rm = TRUE), NA_real_),
-          sum_abund  = ifelse(n_with_abund > 0, sum(.data$individualCount,  na.rm = TRUE), NA_real_),
+          mean_abund   = ifelse(n_with_abund > 0, mean(.data$individualCount, na.rm = TRUE), NA_real_),
+          sum_abund    = ifelse(n_with_abund > 0, sum(.data$individualCount,  na.rm = TRUE), NA_real_),
+          latest_date  = suppressWarnings(max(as.Date(.data$eventDate), na.rm = TRUE)),
           .groups = "drop"
+        ) |>
+        dplyr::mutate(
+          label = vapply(seq_len(n()), function(i) make_taxon_label(aphia[i], taxon_name[i]), character(1))
         )
       
-      list(grid = sf::st_transform(grid_sf, 4326), all = summ_all, by_taxon = summ_taxon)
+      list(grid = sf::st_transform(grid_sf, 4326), all = summ_all, by_taxon = by_taxon)
+    })
+    
+    # ---- Taxon-for-metric (choices = named vector; values = AphiaIDs) ------
+    observeEvent(list(grid_data(), obis_df()), ignoreInit = FALSE, {
+      gd <- grid_data()
+      choices <- character(0)
+      if (!is.null(gd) && !is.null(gd$by_taxon) &&
+          all(c("aphia","label") %in% names(gd$by_taxon))) {
+        choices_vec <- gd$by_taxon %>% distinct(aphia, label) %>% arrange(label)
+        choices <- setNames(as.character(choices_vec$aphia), choices_vec$label)
+      }
+      updateSelectInput(session, "metric_taxon",
+                        choices = choices,
+                        selected = if (length(choices)) choices[[1]] else character(0))
     })
     
     # ---- Map ---------------------------------------------------------------
@@ -312,7 +262,7 @@ MapSearchServer <- function(id) {
                         proxy |> leaflet::clearShapes() |> leaflet::clearControls() |> leaflet::clearMarkers()
                         
                         if (is.null(gd)) {
-                          shiny::showNotification("No mappable records for current selection.", type = "message", duration = 4)
+                          showNotification("No mappable records for current selection.", type = "message", duration = 4)
                           return()
                         }
                         
@@ -341,55 +291,81 @@ MapSearchServer <- function(id) {
                             leg_title <- metric_field
                           } else {
                             req(input$metric_taxon)
+                            sel_aphia  <- suppressWarnings(as.integer(input$metric_taxon))
+                            sel_label  <- gd$by_taxon$label[match(sel_aphia, gd$by_taxon$aphia)][1]
                             tax_df <- gd$by_taxon |>
-                              dplyr::filter(.data$taxon == input$metric_taxon) |>
+                              dplyr::filter(.data$aphia == sel_aphia) |>
                               dplyr::transmute(cell_id, value = .data[[metric_field]])
                             if (nrow(tax_df) == 0) {
-                              shiny::showNotification("No per-taxon records found for this cell/metric.", type = "warning", duration = 4)
+                              showNotification("No per-taxon records found for this cell/metric.", type = "warning", duration = 4)
                               return()
                             }
                             dat <- gd$grid |> dplyr::inner_join(tax_df, by = "cell_id")
-                            leg_title <- paste(metric_field, input$metric_taxon)
+                            leg_title <- paste(metric_field, sel_label)
                           }
                         }
                         
                         if (nrow(dat) == 0) {
-                          shiny::showNotification("No cells to display for current selection.", type = "message", duration = 4)
+                          showNotification("No cells to display for current selection.", type = "message", duration = 4)
                           return()
                         }
                         
                         vals <- dat$value
                         vals_ok <- vals[is.finite(vals)]
                         if (length(vals_ok) == 0) {
-                          shiny::showNotification("All metric values are NA/zero.", type = "message", duration = 4)
+                          showNotification("All metric values are NA/zero.", type = "message", duration = 4)
                           return()
                         }
                         
-                        # popup content
-                        if (metric_field == "spp_rich") {
-                          species_summary <- gd$by_taxon |>
-                            dplyr::filter(.data$cell_id %in% dat$cell_id) |>
-                            dplyr::group_by(.data$cell_id) |>
-                            dplyr::summarise(
-                              popup_txt = paste0("<ul>", paste0("<li>", unique(.data$taxon), "</li>", collapse = ""), "</ul>"),
-                              .groups = "drop"
+                        # popup: "Name (AphiaID:xxx, NCBI:yyy): n_occ — latest: YYYY-MM-DD"
+                        species_summary <- gd$by_taxon |>
+                          dplyr::filter(.data$cell_id %in% dat$cell_id) |>
+                          dplyr::mutate(
+                            label_full = paste0(
+                              .data$label, ": ", .data$n_occ,
+                              " — latest: ", ifelse(is.finite(.data$latest_date), as.character(.data$latest_date), "NA")
                             )
-                        } else {
-                          species_summary <- gd$by_taxon |>
-                            dplyr::filter(.data$cell_id %in% dat$cell_id) |>
-                            dplyr::group_by(.data$cell_id) |>
-                            dplyr::summarise(
-                              popup_txt = paste0("<ul>", paste0("<li>", .data$taxon, ": ", round(.data[[metric_field]], 2), "</li>", collapse = ""), "</ul>"),
-                              .groups = "drop"
-                            )
+                          ) |>
+                          dplyr::group_by(.data$cell_id) |>
+                          dplyr::summarise(
+                            popup_txt = paste0("<ul>", paste0("<li>", .data$label_full, "</li>", collapse = ""), "</ul>"),
+                            .groups = "drop"
+                          )
+                        if (nrow(species_summary) == 0) {
+                          species_summary <- tibble(cell_id = integer(), popup_txt = character())
                         }
                         dat <- dat |> dplyr::left_join(species_summary, by = "cell_id")
+                        dat$popup_txt[is.na(dat$popup_txt)] <- "<ul><li>(no species detail)</li></ul>"
                         
                         popup <- paste0(
                           "<b>Cell:</b> ", dat$cell_id,
                           "<br/><b>", leg_title, ":</b> ", round(dat$value, 2),
                           "<br/><b>Species breakdown:</b>", dat$popup_txt
                         )
+                        
+                        make_bin_pal <- function(vals, mode = c("equal","quantile","custom"), cuts = c(0,5,10,20), n = 7) {
+                          mode <- match.arg(mode)
+                          vals_ok <- vals[is.finite(vals)]
+                          if (length(vals_ok) == 0 || length(unique(vals_ok)) <= 1) {
+                            return(leaflet::colorNumeric("viridis", domain = vals_ok, na.color = "#F0F0F0"))
+                          }
+                          if (mode == "quantile") {
+                            q <- stats::quantile(vals_ok, probs = seq(0, 1, length.out = n), na.rm = TRUE)
+                            brks <- unique(as.numeric(q))
+                          } else if (mode == "custom") {
+                            brks <- sort(unique(cuts))
+                          } else {
+                            rng <- range(vals_ok, na.rm = TRUE)
+                            brks <- unique(pretty(rng, n = n))
+                          }
+                          brks <- sort(unique(c(-Inf, brks, Inf)))
+                          if (length(brks) < 3) {
+                            rng <- range(vals_ok, na.rm = TRUE)
+                            brks <- sort(unique(c(-Inf, pretty(rng, n = 4), Inf)))
+                          }
+                          leaflet::colorBin("viridis", domain = vals_ok, bins = brks, na.color = "#F0F0F0")
+                        }
+                        parse_cuts <- function(txt) as.numeric(strsplit(gsub("\\s+", "", txt), ",")[[1]])
                         
                         pal <- make_bin_pal(vals, mode = input$bin_mode, cuts = parse_cuts(input$custom_cuts), n = input$n_bins)
                         
@@ -414,13 +390,22 @@ MapSearchServer <- function(id) {
     # ---- Table --------------------------------------------------------------
     output$tbl <- DT::renderDT({
       gd <- grid_data()
-      if (is.null(gd) || nrow(gd$all) == 0)
+      validate(need(!is.null(gd), "No records found."))
+      
+      if (nrow(gd$all) == 0) {
         return(DT::datatable(tibble::tibble(msg = "No records found."), rownames = FALSE))
+      }
+      
       dat <- gd$grid |> dplyr::inner_join(gd$all, by = "cell_id")
+      if (!"geometry" %in% names(dat)) {
+        return(DT::datatable(tibble::tibble(msg = "No geometry to tabulate."), rownames = FALSE))
+      }
+      
       cent <- sf::st_centroid(dat$geometry)
       coords <- sf::st_coordinates(cent)
       out <- dat |> sf::st_drop_geometry() |>
-        dplyr::mutate(centroid_lon = round(coords[,1], 5), centroid_lat = round(coords[,2], 5))
+        dplyr::mutate(centroid_lon = round(coords[,1], 5),
+                      centroid_lat = round(coords[,2], 5))
       DT::datatable(out, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
     })
     
@@ -441,51 +426,70 @@ MapSearchServer <- function(id) {
       }
     )
     
-    # ---- Species Info -------------------------------------------------------
-    safe_val <- function(df, col) if (!is.null(df) && col %in% names(df)) as.character(df[[col]][1]) else NA
-    
+    # ---- Species Info (uses detected CSV column names) ----------------------
     species_info <- reactive({
       req(input$sp)
       if (length(input$sp) != 1) return(NULL)
-      sp  <- input$sp
-      row <- full_species |>
-        dplyr::filter(.data$species_canonical == sp) |>
-        dplyr::slice(1)
-      info <- robis_try(robis::taxon(sp))
-      checklist <- robis_try(robis::checklist(scientificname = sp))
-      list(info = info, checklist = checklist, row = row)
+      sp_txt <- input$sp
+      
+      aphia_used <- resolve_to_aphia(sp_txt)
+      row_csv    <- match_species_row(sp_txt)
+      
+      aphia_csv <- if (nrow(row_csv) && !is.na(COL_APHIA) && COL_APHIA %in% names(row_csv))
+        suppressWarnings(as.integer(row_csv[[COL_APHIA]])) else NA_integer_
+      ncbi_csv  <- if (nrow(row_csv) && !is.na(COL_NCBI)  && COL_NCBI  %in% names(row_csv))
+        suppressWarnings(as.integer(row_csv[[COL_NCBI ]])) else NA_integer_
+      
+      syns <- collapse_synonyms(row_csv)
+      
+      worms_rec <- tryCatch(if (!is.na(aphia_used)) worrms::wm_record(aphia_used) else NULL, error = function(e) NULL)
+      checklist <- tryCatch(if (!is.na(aphia_used)) robis::checklist(taxonid = aphia_used) else NULL, error = function(e) NULL)
+      
+      yrange <- tryCatch({
+        df <- get_obis_by_query(sp_txt, fields = c("eventDate"))
+        if (!is.data.frame(df) || !"eventDate" %in% names(df) || nrow(df) == 0) "NA – NA" else {
+          yrs <- suppressWarnings(lubridate::year(lubridate::ymd(df$eventDate)))
+          yrs <- yrs[!is.na(yrs)]
+          if (!length(yrs)) "NA – NA" else paste0(min(yrs), " – ", max(yrs))
+        }
+      }, error = function(e) "NA – NA")
+      
+      list(aphia_used = aphia_used, aphia_csv = aphia_csv, ncbi_csv = ncbi_csv,
+           syns = syns, worms = worms_rec, checklist = checklist, yrange = yrange)
     })
     
     output$species_info <- renderUI({
       dat <- species_info()
       if (is.null(dat)) return(htmltools::HTML("<p>Select a single species to see details.</p>"))
-      info <- dat$info; checklist <- dat$checklist; row <- dat$row
-      aphia <- if ("aphia_id" %in% names(row) && !is.na(row$aphia_id)) row$aphia_id else "None"
-      syns  <- if ("synonyms" %in% names(row) && !is.na(row$synonyms)) row$synonyms else "None"
-      yrange <- year_range_full(row$species_canonical, aphia)
+      safe <- function(x, nm) if (!is.null(x) && nm %in% names(x)) as.character(x[[nm]][1]) else NA
       
       htmltools::tagList(
         htmltools::h4("Identifiers"),
-        htmltools::HTML(paste0("<b>AphiaID:</b> ", aphia, "<br/><b>Synonyms:</b> ", syns, "<br/>")),
+        htmltools::HTML(paste0(
+          "<b>AphiaID (used for OBIS):</b> ", ifelse(is.na(dat$aphia_used), "None", dat$aphia_used), "<br/>",
+          "<b>AphiaID (from CSV row):</b> ",  ifelse(is.na(dat$aphia_csv),  "None", dat$aphia_csv),  "<br/>",
+          "<b>NCBI Taxon ID (CSV):</b> ",     ifelse(is.na(dat$ncbi_csv),   "None", dat$ncbi_csv),   "<br/>",
+          "<b>Synonyms (CSV):</b> ",          dat$syns
+        )),
         htmltools::h4("Taxonomy"),
-        if (!is.null(info) && nrow(info) > 0) {
-          htmltools::HTML(paste0(
-            "<b>Scientific name:</b> ", safe_val(info, "scientificname"), "<br/>",
-            "<b>Status:</b> ",        safe_val(info, "status"), "<br/>",
-            "<b>Environment:</b> ",   safe_val(info, "environment"), "<br/>"
-          ))
-        },
+        htmltools::HTML(paste0(
+          "<b>Scientific name:</b> ", safe(dat$worms, "scientificname"), "<br/>",
+          "<b>Status:</b> ",          safe(dat$worms, "status"), "<br/>",
+          "<b>Environment:</b> ",     safe(dat$worms, "environment")
+        )),
         htmltools::h4("Checklist summary"),
-        if (!is.null(checklist) && nrow(checklist) > 0) {
+        if (!is.null(dat$checklist) && nrow(dat$checklist) > 0) {
           htmltools::HTML(paste0(
-            "<b>Total records:</b> ", safe_val(checklist, "records"), "<br/>",
-            "<b>Year range:</b> ",    yrange, "<br/>",
-            "<b>Phylum:</b> ",        safe_val(checklist, "phylum"), "<br/>",
-            "<b>Class:</b> ",         safe_val(checklist, "class"), "<br/>",
-            "<b>Order:</b> ",         safe_val(checklist, "order"), "<br/>",
-            "<b>Family:</b> ",        safe_val(checklist, "family"), "<br/>",
-            "<b>Genus:</b> ",         safe_val(checklist, "genus")
+            "<b>Total records:</b> ", safe(dat$checklist, "records"), "<br/>",
+            "<b>Year range:</b> ",    dat$yrange, "<br/>",
+            "<b>Phylum:</b> ",        safe(dat$checklist, "phylum"), "<br/>",
+            "<b>Class:</b> ",         safe(dat$checklist, "class"), "<br/>",
+            "<b>Order:</b> ",         safe(dat$checklist, "order"), "<br/>",
+            "<b>Family:</b> ",        safe(dat$checklist, "family"), "<br/>",
+            "<b>Genus:</b> ",         safe(dat$checklist, "genus")
           ))
+        } else {
+          htmltools::HTML("<p>No checklist summary available for this query.</p>")
         }
       )
     })
