@@ -31,6 +31,7 @@ if "sequencing_status" in df.columns:
         y='species_canonical',
         color='sequencing_status',
         barmode='group',
+        orientation='h',
         labels={'species_canonical': 'Number of Species', 'order': 'Order'},
         title='Species Count per Order grouped by Sequencing Status'
     )
