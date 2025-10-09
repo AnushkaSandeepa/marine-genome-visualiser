@@ -17,8 +17,13 @@ import streamlit as st
 # ----------------------------
 st.set_page_config(
     page_title="Ocean Genomes — Research Progress",
-    page_icon="🌊",
-    layout="wide"
+    page_icon="🐟",
+    layout="wide",
+    menu_items={  # 👈 hides "Fork this repo" and other default links
+        "Get Help": None,
+        "Report a Bug": None,
+        "About": None
+    }
 )
 
 # Expected column names (update here if schema changes)
@@ -452,7 +457,7 @@ df_f = df[mask].copy()
 # ----------------------------
 # Header / KPIs
 # ----------------------------
-st.title("🌊 Ocean Genomes — Research Progress Dashboard")
+st.title("🐟 Ocean Genomes — Research Progress Dashboard")
 st.caption("Fewer, clearer visuals. Designed for quick, defensible decisions.")
 
 total, in_prog, completed, pct = compute_kpis(df_f)
@@ -494,20 +499,6 @@ if png2:
 st.markdown("---")
 
 # ----------------------------
-# Plot 3 — Progress by habitat (share within habitat)
-# ----------------------------
-st.subheader("3) Habitat context — progress share within each primary habitat")
-fig3 = plot_habitat_progress_share(df_f)
-st.plotly_chart(fig3, use_container_width=True)
-st.caption("Within each habitat, the proportion of species at each stage (100% stacked). Useful for planning fieldwork or focusing curation efforts.")
-
-png3 = figure_to_png_bytes(fig3)
-if png3:
-    st.download_button("⬇️ Download this figure (PNG)", data=png3, file_name="habitat_progress_share.png", mime="image/png")
-
-st.markdown("---")
-
-# ----------------------------
 # Completed species table (+ download)
 # ----------------------------
 st.subheader("Completed species (INSDC open)")
@@ -540,7 +531,7 @@ with st.expander("Optional: Download filtered dataset"):
 # ----------------------------
 # Plot 4 — Taxonomic Explorer (click to drill)
 # ----------------------------
-st.subheader("4) Taxonomic Explorer — click to drill into taxa")
+st.subheader("3) Taxonomic Explorer — click to drill into taxa")
 st.caption("Interactive, circle-like view of taxonomy. Click a sector to zoom in; use the upper-left breadcrumb to go back.")
 
 def build_taxonomy_sunburst(df: pd.DataFrame) -> go.Figure:
