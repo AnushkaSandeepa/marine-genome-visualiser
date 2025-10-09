@@ -6,7 +6,7 @@ This repository hosts the UWA Capstone Project for the Master of Data Science pr
 install.packages(c(
   "shiny","bslib","leaflet","leaflet.extras","robis","dplyr","purrr","lubridate",
   "DT","scales","memoise","tibble","stringr","htmltools","readr","jsonlite",
-  "tidyr","httr","reticulate"
+  "tidyr","httr","reticulate", "worrms"
 ))
 
 
