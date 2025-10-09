@@ -180,10 +180,13 @@ VizServer <- function(id) {
     }
     
     # Streamlit card with spinner + fallback + toolbar
-    streamlit_card <- function(container_id, url, public_url, height_px = 900, title = "", filename = "visualization.png") {
+    # Streamlit card with spinner + timeout fallback + toolbar
+    streamlit_card <- function(container_id, url, public_url, height_px = 900, title = "", filename = "visualization.png", timeout_ms = 12000) {
       iframe_id <- ns(paste0(container_id, "_iframe"))
       fb_id     <- ns(paste0(container_id, "_fb"))
       spin_id   <- ns(paste0(container_id, "_spin"))
+      wrapper_id<- ns(container_id)
+      
       htmltools::tagList(
         htmltools::div(
           class = "toolbar",
@@ -193,25 +196,39 @@ VizServer <- function(id) {
             ns(paste0(container_id, "_dl")),
             label = "📷 Download PNG",
             class = "btn btn-outline-secondary",
-            onclick = sprintf("captureElementPNG('%s','%s');", ns(container_id), filename)
+            onclick = sprintf("captureElementPNG('%s','%s');", wrapper_id, filename)
           )
         ),
         htmltools::tags$div(
-          id = ns(container_id),
+          id = wrapper_id,
           class = "pbi-container",
           style = sprintf("height:%dpx;", as.integer(height_px)),
           htmltools::tags$div(class = "panel-header", title),
+          
+          # Spinner overlay (initially visible)
           htmltools::tags$div(
             id = spin_id, class = "spinner-wrap",
             htmltools::tags$div(class = "spinner"),
             htmltools::tags$div(style = "margin-left:10px; font-weight:500; color:#374151;", "Loading dashboard…")
           ),
+          
+          # The iframe; when it loads we hide the spinner & ensure fallback is hidden
           htmltools::tags$iframe(
-            id = iframe_id, class = "pbi-iframe",
-            src = url,
-            allow = "clipboard-read; clipboard-write; fullscreen",
-            frameborder = "0"
+            id   = iframe_id,
+            class= "pbi-iframe",
+            src  = url,
+            allow= "clipboard-read; clipboard-write; fullscreen",
+            frameborder = "0",
+            onload = sprintf(
+              "try{ 
+             var s=document.getElementById('%s'); if(s) s.style.display='none';
+             var f=document.getElementById('%s'); if(f) f.style.display='none';
+           }catch(e){}",
+              spin_id, fb_id
+            )
           ),
+          
+          # Fallback panel (initially hidden; shown if we time out)
           htmltools::tags$div(
             id = fb_id,
             style = "display:none; padding:16px;",
@@ -223,74 +240,36 @@ VizServer <- function(id) {
             )
           )
         ),
-        htmltools::tags$script(htmltools::HTML("
-          async function captureElementPNG(elId, fileName) {
-            const el = document.getElementById(elId);
-            if (!el) { alert('Panel not found.'); return; }
         
-            const rect = el.getBoundingClientRect();
-        
-            // Prefer screen capture for iframes
-            const canScreenCap = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
-            const isSecure = (location.protocol === 'https:' || location.hostname === 'localhost');
-        
-            if (canScreenCap && isSecure) {
-              try {
-                const stream = await navigator.mediaDevices.getDisplayMedia({
-                  video: { displaySurface: 'browser', preferCurrentTab: true, logicalSurface: true },
-                  audio: false
-                });
-                const track = stream.getVideoTracks()[0];
-                const imageCapture = new ImageCapture(track);
-                const bmp = await imageCapture.grabFrame();
-        
-                // Map viewport CSS pixels -> captured bitmap pixels
-                const scaleX = bmp.width  / window.innerWidth;
-                const scaleY = bmp.height / window.innerHeight;
-        
-                // Crop rect in bitmap space
-                let cropX = Math.max(0, Math.floor(rect.left   * scaleX));
-                let cropY = Math.max(0, Math.floor(rect.top    * scaleY));
-                let cropW = Math.min(bmp.width  - cropX, Math.floor(rect.width  * scaleX));
-                let cropH = Math.min(bmp.height - cropY, Math.floor(rect.height * scaleY));
-        
-                // Safety: if something went wrong, capture whole frame instead of blank
-                if (cropW <= 0 || cropH <= 0) { cropX = 0; cropY = 0; cropW = bmp.width; cropH = bmp.height; }
-        
-                const canvas = document.createElement('canvas');
-                canvas.width = cropW; canvas.height = cropH;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(bmp, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-        
-                track.stop();
-                const a = document.createElement('a');
-                a.download = fileName || 'visualization.png';
-                a.href = canvas.toDataURL('image/png');
-                a.click();
-                return;
-              } catch (err) {
-                console.warn('Screen capture failed; falling back to html2canvas. Cross-origin iframes will be blank.', err);
-              }
-            }
-        
-            // Fallback (cannot draw cross-origin iframes)
-            if (window.html2canvas) {
-              try {
-                const canvas = await window.html2canvas(el, {useCORS:true, allowTaint:true, backgroundColor:'#ffffff'});
-                const a = document.createElement('a');
-                a.download = fileName || 'visualization.png';
-                a.href = canvas.toDataURL('image/png');
-                a.click();
-              } catch (e) {
-                alert('Fallback capture failed. Open in a new tab and use the browser\\'s Save or Print to PDF.');
-              }
-            } else {
-              alert('Unable to capture. Open in a new tab and use the browser\\'s Save or Print to PDF.');
-            }
-          }
-        "))
-        )
+        # Per-card watchdog: if onload never fires (blocked/CSP), show fallback & hide spinner
+        htmltools::tags$script(htmltools::HTML(sprintf("
+      (function(){
+        var fired = false;
+        var ifr = document.getElementById('%s');
+        var spin= document.getElementById('%s');
+        var fb  = document.getElementById('%s');
+
+        if (!ifr) return;
+
+        var markLoaded = function(){ fired = true; if (spin) spin.style.display='none'; if (fb) fb.style.display='none'; };
+
+        // If the onload has already fired by the time this runs, hide spinner now
+        if (ifr.complete) { markLoaded(); }
+
+        // Belt-and-braces: also listen to load (some browsers dispatch late)
+        ifr.addEventListener('load', markLoaded, { once:true });
+
+        // Watchdog timeout: if nothing loads in time, reveal fallback
+        setTimeout(function(){
+          if (fired) return;
+          if (spin) spin.style.display='none';
+          if (fb)   fb.style.display='';
+        }, %d);
+      })();
+    ", iframe_id, spin_id, fb_id, as.integer(timeout_ms))))
+      )
     }
+    
     
     # ---------- Hard-wire your two live public links into the main tabs ----------
     DIST_URL <- "https://app.powerbi.com/view?r=eyJrIjoiOTYyOGJiMzEtYzU2Mi00Nzc0LTkyZTUtNTBlN2IxMTAzZjRlIiwidCI6IjYwMDg2NDZiLTFmODctNDI0NC05YzMxLTI0Yjg1ZGQwNGRhMiIsImMiOjEwfQ%3D%3D"

@@ -32,6 +32,68 @@ make_taxon_label <- function(aph, name = NA_character_) {
 MapSearchUI <- function(id) {
   ns <- NS(id)
   shiny::fluidPage(
+    # ---- HEAD: load html2canvas + define captureElementPNG (guarded) ----
+    htmltools::tags$head(
+      htmltools::tags$script(src = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"),
+      htmltools::tags$script(htmltools::HTML("
+        if (typeof window.captureElementPNG !== 'function') {
+          window.captureElementPNG = async function(elId, fileName) {
+            const el = document.getElementById(elId);
+            if (!el) { alert('Panel not found.'); return; }
+            const rect = el.getBoundingClientRect();
+            const canScreenCap = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+            const isSecure = (location.protocol === 'https:' || location.hostname === 'localhost');
+
+            if (canScreenCap && isSecure) {
+              try {
+                const stream = await navigator.mediaDevices.getDisplayMedia({
+                  video: { displaySurface: 'browser', preferCurrentTab: true, logicalSurface: true },
+                  audio: false
+                });
+                const track = stream.getVideoTracks()[0];
+                const imageCapture = new ImageCapture(track);
+                const bmp = await imageCapture.grabFrame();
+
+                const scaleX = bmp.width  / window.innerWidth;
+                const scaleY = bmp.height / window.innerHeight;
+                let cropX = Math.max(0, Math.floor(rect.left   * scaleX));
+                let cropY = Math.max(0, Math.floor(rect.top    * scaleY));
+                let cropW = Math.min(bmp.width  - cropX, Math.floor(rect.width  * scaleX));
+                let cropH = Math.min(bmp.height - cropY, Math.floor(rect.height * scaleY));
+                if (cropW <= 0 || cropH <= 0) { cropX = 0; cropY = 0; cropW = bmp.width; cropH = bmp.height; }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = cropW; canvas.height = cropH;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(bmp, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+                track.stop();
+                const a = document.createElement('a');
+                a.download = fileName || 'snapshot.png';
+                a.href = canvas.toDataURL('image/png');
+                a.click();
+                return;
+              } catch(e) { console.warn('Screen capture failed; falling back to html2canvas.', e); }
+            }
+
+            if (window.html2canvas) {
+              try {
+                const canvas = await window.html2canvas(el, {useCORS:true, allowTaint:true, backgroundColor:'#ffffff'});
+                const a = document.createElement('a');
+                a.download = fileName || 'snapshot.png';
+                a.href = canvas.toDataURL('image/png');
+                a.click();
+              } catch(e) {
+                alert('Fallback failed. Use your browser\\'s Print to PDF / Save screenshot.');
+              }
+            } else {
+              alert('Unable to capture. Use your browser\\'s Print to PDF / screenshot.');
+            }
+          }
+        }
+      "))
+    ),
+    
     shiny::titlePanel("Ocean Genome Explorer"),
     shiny::sidebarLayout(
       shiny::sidebarPanel(
@@ -100,17 +162,43 @@ MapSearchUI <- function(id) {
       ),
       shiny::mainPanel(
         shiny::tabsetPanel(
-          shiny::tabPanel("Map & Table",
-                          leaflet::leafletOutput(ns("map"), height = 620),
-                          htmltools::br(),
-                          DT::DTOutput(ns("tbl"))
+          shiny::tabPanel(
+            "Map & Table",
+            # ---- Toolbar: snapshot buttons ----
+            htmltools::div(
+              style = "display:flex; gap:8px; align-items:center; margin-bottom:8px;",
+              shiny::actionButton(
+                ns("snap_tab"),
+                "📷 Download Page PNG",
+                class = "btn btn-outline-secondary",
+                onclick = sprintf("captureElementPNG('%s','%s');", ns("map_tab_wrap"), "map_and_table.png")
+              ),
+              shiny::actionButton(
+                ns("snap_map"),
+                "📷 Download Map PNG",
+                class = "btn btn-outline-secondary",
+                onclick = sprintf("captureElementPNG('%s','%s');", ns("map_container"), "map_only.png")
+              )
+            ),
+            # ---- Capture wrapper (whole tab) ----
+            htmltools::div(
+              id = ns("map_tab_wrap"),
+              # Map-only wrapper
+              htmltools::div(
+                id = ns("map_container"),
+                leaflet::leafletOutput(ns("map"), height = 620)
+              ),
+              htmltools::br(),
+              DT::DTOutput(ns("tbl"))
+            )
           ),
-          shiny::tabPanel("Species Info",
-                          shiny::uiOutput(ns("species_info")),
-                          plotOutput(ns("records_over_time"), height = 250),
-                          plotOutput(ns("depth_hist"), height = 250),
-                          plotOutput(ns("temp_hist"), height = 250),
-                          plotOutput(ns("sal_hist"), height = 250)
+          shiny::tabPanel(
+            "Species Info",
+            shiny::uiOutput(ns("species_info")),
+            plotOutput(ns("records_over_time"), height = 250),
+            plotOutput(ns("depth_hist"), height = 250),
+            plotOutput(ns("temp_hist"), height = 250),
+            plotOutput(ns("sal_hist"), height = 250)
           )
         )
       )
@@ -412,7 +500,9 @@ MapSearchServer <- function(id) {
     # ---- CSV download -------------------------------------------------------
     output$dl_csv <- shiny::downloadHandler(
       filename = function() {
-        paste0("obis_grid_summary_", gsub("[^A-Za-z0-9]+","_", paste(input$sp, collapse="_")), ".csv")
+        paste0("obis_grid_summary_",
+               gsub("[^A-Za-z0-9]+","_", paste(input$sp, collapse="_")),
+               ".csv")
       },
       content  = function(file) {
         gd <- grid_data()
@@ -490,8 +580,9 @@ MapSearchServer <- function(id) {
           ))
         } else {
           htmltools::HTML("<p>No checklist summary available for this query.</p>")
-        }
       )
+    )
+        })
     })
-  })
-}
+  }
+  
