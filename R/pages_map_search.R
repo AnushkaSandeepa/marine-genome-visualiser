@@ -9,9 +9,9 @@ csv_ids_for_aphia <- function(aph) {
   if (is.na(aph)) return(list(ncbi = NA_integer_, sci = NA_character_))
   row <- tryCatch({
     full_species %>%
-      filter(.data[[COL_APHIA]] == aph) %>%
-      slice(1)
-  }, error = function(e) tibble())
+      dplyr::filter(.data[[COL_APHIA]] == aph) %>%
+      dplyr::slice(1)
+  }, error = function(e) tibble::tibble())
   list(
     ncbi = if (nrow(row) && !is.na(COL_NCBI) && COL_NCBI %in% names(row))
       suppressWarnings(as.integer(row[[COL_NCBI]])) else NA_integer_,
@@ -137,7 +137,6 @@ MapSearchUI <- function(id) {
                               selected = "all", inline = TRUE
           )
         ),
-        # values = AphiaIDs; labels = "Name (AphiaID, NCBI)"
         shiny::conditionalPanel(
           sprintf("input['%s'] != 'spp_rich' && input['%s'] == 'one'", ns("metric"), ns("metric_scope")),
           shiny::selectInput(ns("metric_taxon"), "Taxon for metric", choices = character(0))
@@ -164,7 +163,7 @@ MapSearchUI <- function(id) {
         shiny::tabsetPanel(
           shiny::tabPanel(
             "Map & Table",
-            # ---- Toolbar: snapshot buttons ----
+            # ---- Toolbar: single snapshot button ----
             htmltools::div(
               style = "display:flex; gap:8px; align-items:center; margin-bottom:8px;",
               shiny::actionButton(
@@ -172,18 +171,11 @@ MapSearchUI <- function(id) {
                 "📷 Download Page PNG",
                 class = "btn btn-outline-secondary",
                 onclick = sprintf("captureElementPNG('%s','%s');", ns("map_tab_wrap"), "map_and_table.png")
-              ),
-              shiny::actionButton(
-                ns("snap_map"),
-                "📷 Download Map PNG",
-                class = "btn btn-outline-secondary",
-                onclick = sprintf("captureElementPNG('%s','%s');", ns("map_container"), "map_only.png")
               )
             ),
             # ---- Capture wrapper (whole tab) ----
             htmltools::div(
               id = ns("map_tab_wrap"),
-              # Map-only wrapper
               htmltools::div(
                 id = ns("map_container"),
                 leaflet::leafletOutput(ns("map"), height = 620)
@@ -195,10 +187,10 @@ MapSearchUI <- function(id) {
           shiny::tabPanel(
             "Species Info",
             shiny::uiOutput(ns("species_info")),
-            plotOutput(ns("records_over_time"), height = 250),
-            plotOutput(ns("depth_hist"), height = 250),
-            plotOutput(ns("temp_hist"), height = 250),
-            plotOutput(ns("sal_hist"), height = 250)
+            shiny::plotOutput(ns("records_over_time"), height = 250),
+            shiny::plotOutput(ns("depth_hist"), height = 250),
+            shiny::plotOutput(ns("temp_hist"), height = 250),
+            shiny::plotOutput(ns("sal_hist"), height = 250)
           )
         )
       )
@@ -327,7 +319,7 @@ MapSearchServer <- function(id) {
       choices <- character(0)
       if (!is.null(gd) && !is.null(gd$by_taxon) &&
           all(c("aphia","label") %in% names(gd$by_taxon))) {
-        choices_vec <- gd$by_taxon %>% distinct(aphia, label) %>% arrange(label)
+        choices_vec <- gd$by_taxon %>% dplyr::distinct(aphia, label) %>% dplyr::arrange(label)
         choices <- setNames(as.character(choices_vec$aphia), choices_vec$label)
       }
       updateSelectInput(session, "metric_taxon",
@@ -405,7 +397,7 @@ MapSearchServer <- function(id) {
                           return()
                         }
                         
-                        # popup: "Name (AphiaID:xxx, NCBI:yyy): n_occ — latest: YYYY-MM-DD"
+                        # popup: species breakdown list
                         species_summary <- gd$by_taxon |>
                           dplyr::filter(.data$cell_id %in% dat$cell_id) |>
                           dplyr::mutate(
@@ -420,7 +412,7 @@ MapSearchServer <- function(id) {
                             .groups = "drop"
                           )
                         if (nrow(species_summary) == 0) {
-                          species_summary <- tibble(cell_id = integer(), popup_txt = character())
+                          species_summary <- tibble::tibble(cell_id = integer(), popup_txt = character())
                         }
                         dat <- dat |> dplyr::left_join(species_summary, by = "cell_id")
                         dat$popup_txt[is.na(dat$popup_txt)] <- "<ul><li>(no species detail)</li></ul>"
@@ -553,6 +545,22 @@ MapSearchServer <- function(id) {
       if (is.null(dat)) return(htmltools::HTML("<p>Select a single species to see details.</p>"))
       safe <- function(x, nm) if (!is.null(x) && nm %in% names(x)) as.character(x[[nm]][1]) else NA
       
+      # precompute the checklist UI to avoid inline if/else inside tagList
+      checklist_ui <-
+        if (!is.null(dat$checklist) && nrow(dat$checklist) > 0) {
+          htmltools::HTML(paste0(
+            "<b>Total records:</b> ", safe(dat$checklist, "records"), "<br/>",
+            "<b>Year range:</b> ",    dat$yrange, "<br/>",
+            "<b>Phylum:</b> ",        safe(dat$checklist, "phylum"), "<br/>",
+            "<b>Class:</b> ",         safe(dat$checklist, "class"), "<br/>",
+            "<b>Order:</b> ",         safe(dat$checklist, "order"), "<br/>",
+            "<b>Family:</b> ",        safe(dat$checklist, "family"), "<br/>",
+            "<b>Genus:</b> ",         safe(dat$checklist, "genus")
+          ))
+        } else {
+          htmltools::HTML("<p>No checklist summary available for this query.</p>")
+        }
+      
       htmltools::tagList(
         htmltools::h4("Identifiers"),
         htmltools::HTML(paste0(
@@ -568,21 +576,8 @@ MapSearchServer <- function(id) {
           "<b>Environment:</b> ",     safe(dat$worms, "environment")
         )),
         htmltools::h4("Checklist summary"),
-        if (!is.null(dat$checklist) && nrow(dat$checklist) > 0) {
-          htmltools::HTML(paste0(
-            "<b>Total records:</b> ", safe(dat$checklist, "records"), "<br/>",
-            "<b>Year range:</b> ",    dat$yrange, "<br/>",
-            "<b>Phylum:</b> ",        safe(dat$checklist, "phylum"), "<br/>",
-            "<b>Class:</b> ",         safe(dat$checklist, "class"), "<br/>",
-            "<b>Order:</b> ",         safe(dat$checklist, "order"), "<br/>",
-            "<b>Family:</b> ",        safe(dat$checklist, "family"), "<br/>",
-            "<b>Genus:</b> ",         safe(dat$checklist, "genus")
-          ))
-        } else {
-          htmltools::HTML("<p>No checklist summary available for this query.</p>")
+        checklist_ui
       )
-    )
-        })
     })
-  }
-  
+  })
+}
