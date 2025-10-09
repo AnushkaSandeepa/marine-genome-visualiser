@@ -1,0 +1,16 @@
+^renv/
+^packrat/
+^\\.git/
+^\\.Rproj.user/
+^\\.vscode/
+^\\.idea/
+^node_modules/
+^__pycache__/
+^\\.venv/|^venv/|^env/
+^reticulate/
+^Python/
+^data/|^CSV/|^Data/|^datasets?/
+^outputs?/|^artifacts?/
+^www/.*\\.(png|jpe?g|svg|gif|ico|css|js)$
+^docs?/|^reports?/
+~\\$.*|desktop\\.ini$
