@@ -1,4 +1,3 @@
-# app_streamlit.py
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -63,7 +62,7 @@ def prep_stats(df: pd.DataFrame) -> pd.DataFrame:
         base["status"] = "All"
 
     base = base.dropna(subset=["temp"])
-    base = base[(base["temp"] > -5) & (base["temp"] < 60)]
+    base = base[(base["temp"] > -20) & (base["temp"] < 80)]
 
     stats = (
         base.groupby(["status","aphia_id","species"])["temp"]
@@ -154,13 +153,37 @@ def main():
     st.title("Species by Average Temperature (2 °C bins)")
 
     df = load_data(CSV_PATH)
-    stats = prep_stats(df)
+    stats_full = prep_stats(df)
+
+    valid_tavg = stats_full["tavg"].dropna()
+    if valid_tavg.empty:
+        st.warning("No temperature data available to visualise.")
+        st.stop()
+
+    slider_min = float(np.floor(valid_tavg.min()))
+    slider_max = float(np.ceil(valid_tavg.max()))
+    span = slider_max - slider_min
+    slider_step = 0.5 if span >= 5 else 0.1
+    temp_min, temp_max = st.slider(
+        "Temperature range (°C)",
+        min_value=slider_min,
+        max_value=slider_max,
+        value=(slider_min, slider_max),
+        step=slider_step,
+        help="Filter species whose average temperature falls within this range.",
+    )
+
+    stats = stats_full[stats_full["tavg"].between(temp_min, temp_max)]
+    if stats.empty:
+        st.warning("No species fall inside the selected temperature range.")
+        st.stop()
 
     statuses = ["All"] + sorted([s for s in stats["status"].unique() if s != "All"])
     status_sel = st.selectbox("Status", statuses, index=0)
 
+    status_subset = stats if status_sel == "All" else stats[stats["status"] == status_sel]
     aphia_options = ["All"] + sorted(
-        stats[stats["status"].eq(status_sel) | (status_sel == "All")]["aphia_id"].astype(str).unique(),
+        status_subset["aphia_id"].astype(str).unique(),
         key=lambda x: (len(x), x)
     )
     aphia_sel = st.selectbox("AphiaID", aphia_options, index=0)
@@ -169,7 +192,9 @@ def main():
 
     st.markdown(
         f"<div style='font-size:13px;'>"
-        f"<b>Current filters:</b> Status = <code>{status_sel}</code>, AphiaID = <code>{selected_aphia or 'All'}</code>"
+        f"<b>Current filters:</b> Status = <code>{status_sel}</code>, "
+        f"AphiaID = <code>{selected_aphia or 'All'}</code>, "
+        f"Temperature = <code>{temp_min:.1f}–{temp_max:.1f} °C</code>"
         f"</div>",
         unsafe_allow_html=True
     )
