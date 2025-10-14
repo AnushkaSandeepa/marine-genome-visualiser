@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from pathlib import Path
 
-CSV_PATH = Path("/Users/jagdishsingh/Downloads/new_final_species.csv")
+CSV_PATH = Path(__file__).resolve().parent / "new_final_species.csv"
 
 @st.cache_data
 def load_data(path: Path) -> pd.DataFrame:
