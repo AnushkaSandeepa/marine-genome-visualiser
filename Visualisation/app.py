@@ -7,7 +7,8 @@ from pathlib import Path
 CSV_PATH = Path(__file__).resolve().parent / "new_final_species.csv"
 
 @st.cache_data
-def load_data(path: Path) -> pd.DataFrame:
+def load_data(path: Path, cache_key: float) -> pd.DataFrame:
+    _ = cache_key  # ensures cache invalidates when the file timestamp changes
     if not path.exists():
         st.error(f"Couldn't find file at {path}. Update CSV_PATH.")
         st.stop()
@@ -152,7 +153,7 @@ def make_chart(stats, bin_edges, status_sel="All", aphia_sel=None):
 def main():
     st.title("Species by Average Temperature (2 °C bins)")
 
-    df = load_data(CSV_PATH)
+    df = load_data(CSV_PATH, CSV_PATH.stat().st_mtime)
     stats_full = prep_stats(df)
 
     valid_tavg = stats_full["tavg"].dropna()
